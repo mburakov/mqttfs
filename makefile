@@ -7,22 +7,13 @@ libs?=\
 	libmosquitto
 
 CFLAGS?=\
-	-O0 -g3 \
+	-march=native -O3 -flto \
 	-Wall -Wextra -pedantic \
 	-DFUSE_USE_VERSION=30 \
 	-D_GNU_SOURCE
 
 LDFLAGS?=\
-	-O0
-
-#CFLAGS?=\
-#	-march=native -O3 -flto \
-#	-Wall -Wextra -pedantic \
-#	-DFUSE_USE_VERSION=30 \
-#	-D_GNU_SOURCE
-
-#LDFLAGS?=\
-#	-O3 -s -flto
+	-O3 -s -flto
 
 CFLAGS+=$(shell pkg-config --cflags $(libs))
 LDFLAGS+=$(shell pkg-config --libs $(libs))
