@@ -155,6 +155,51 @@ rollback_mtx_lock:
   return result;
 }
 
+static int MqttfsWrite(const char* path, const char* buf, size_t size,
+                       off_t offset, struct fuse_file_info* fi) {
+  (void)fi;
+  (void)offset;
+  struct Context* context = fuse_get_context()->private_data;
+  if (mtx_lock(&context->entries_mutex)) {
+    LOG(ERR, "failed to lock entries mutex");
+    return -EIO;
+  }
+  int result = 0;
+  struct Entry root = {.subs = context->entries};
+  struct Entry* entry =
+      strcmp(path, "/") ? EntrySearch(&root.subs, path) : &root;
+  if (!entry) {
+    result = -ENOENT;
+    goto rollback_mtx_lock;
+  }
+  if (entry->subs) {
+    // mburakov: Entry is preserved, but it will be empty
+    // TODO(mburakov): Does this status make sense?
+    result = -EISDIR;
+    goto rollback_mtx_lock;
+  }
+  void* data = malloc(size);
+  if (!data) {
+    // mburakov: Entry is preserved, but it will be empty
+    result = -EIO;
+    goto rollback_mtx_lock;
+  }
+  memcpy(data, buf, size);
+  free(entry->data);
+  entry->data = data;
+  entry->size = size;
+  if (!MqttPublish(context->mqtt, path + 1, data, size)) {
+    result = -EIO;
+    goto rollback_mtx_lock;
+  }
+rollback_mtx_lock:
+  if (mtx_unlock(&context->entries_mutex)) {
+    LOG(CRIT, "failed to unlock entries mutex");
+    // TODO(mburakov): What to do here?
+  }
+  return (int)size;
+}
+
 static void OnReaddirWalk(void* user, const struct Entry* entry) {
   struct {
     void* buf;
@@ -201,12 +246,19 @@ rollback_mtx_lock:
 }
 
 static const struct fuse_operations g_fuse_operations = {
-    .getattr = MqttfsGetattr, .read = MqttfsRead, .readdir = MqttfsReaddir};
+    .getattr = MqttfsGetattr,
+    .read = MqttfsRead,
+    .write = MqttfsWrite,
+    .readdir = MqttfsReaddir};
 
 int main(int argc, char* argv[]) {
   int result = EXIT_FAILURE;
   struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
   g_options.host = strdup("localhost");
+  if (!g_options.host) {
+    LOG(ERR, "failed to allocate hostname");
+    goto rollback_fuse_args_init;
+  }
   g_options.port = 1883;
   g_options.keepalive = 60;
   if (fuse_opt_parse(&args, &g_options, g_options_spec, NULL) == -1) {

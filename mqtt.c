@@ -112,12 +112,13 @@ rollback_mosquitto_lib_init:
 
 _Bool MqttPublish(struct Mqtt* mqtt, const char* topic, const void* payload,
                   size_t size) {
-  // TODO(mburakov): Implement me!
-  (void)mqtt;
-  (void)topic;
-  (void)payload;
-  (void)size;
-  return 0;
+  int mosq_error =
+      mosquitto_publish(mqtt->mosq, NULL, topic, (int)size, payload, 0, 0);
+  if (mosq_error) {
+    LOG(WARNING, "failed to publish topc: %s", mosquitto_strerror(mosq_error));
+    return 0;
+  }
+  return 1;
 }
 
 void MqttDestroy(struct Mqtt* mqtt) {
