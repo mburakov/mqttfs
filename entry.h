@@ -25,6 +25,7 @@ struct Entry {
   void* data;
   size_t size;
   void* subs;
+  _Bool dir;
 };
 
 typedef void (*EntryWalkCallback)(void* user, const struct Entry* node);

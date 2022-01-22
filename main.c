@@ -109,7 +109,7 @@ static int MqttfsGetattr(const char* path, struct stat* stbuf,
     goto rollback_mtx_lock;
   }
   memset(stbuf, 0, sizeof(struct stat));
-  if (entry->subs || entry == &root) {
+  if (entry->dir || entry->subs || entry == &root) {
     stbuf->st_mode = S_IFDIR | 0755;
     stbuf->st_nlink = 2;
   } else {
@@ -120,6 +120,30 @@ static int MqttfsGetattr(const char* path, struct stat* stbuf,
 rollback_mtx_lock:
   if (mtx_unlock(&context->entries_mutex)) {
     LOG(CRIT, "failed to unlock entries mutex");
+    // TODO(mburakov): What to do here?
+  }
+  return result;
+}
+
+static int MqttfsMkdir(const char* path, mode_t mode) {
+  (void)mode;
+  struct Context* context = fuse_get_context()->private_data;
+  if (mtx_lock(&context->entries_mutex)) {
+    LOG(ERR, "failed to lock entries mutex");
+    return -EIO;
+  }
+  int result = 0;
+  struct Entry root = {.subs = context->entries};
+  struct Entry* entry =
+      strcmp(path, "/") ? EntrySearch(&root.subs, path) : &root;
+  if (!entry) {
+    result = -ENOENT;
+    goto rollback_mtx_lock;
+  }
+  entry->dir = 1;
+rollback_mtx_lock:
+  if (mtx_unlock(&context->entries_mutex)) {
+    LOG(CRIT, "failed to unlock nodes mutex");
     // TODO(mburakov): What to do here?
   }
   return result;
@@ -164,23 +188,20 @@ static int MqttfsWrite(const char* path, const char* buf, size_t size,
     LOG(ERR, "failed to lock entries mutex");
     return -EIO;
   }
-  int result = 0;
+  int result = (int)size;
   struct Entry root = {.subs = context->entries};
   struct Entry* entry =
       strcmp(path, "/") ? EntrySearch(&root.subs, path) : &root;
   if (!entry) {
-    result = -ENOENT;
-    goto rollback_mtx_lock;
-  }
-  if (entry->subs) {
     // mburakov: Entry is preserved, but it will be empty
-    // TODO(mburakov): Does this status make sense?
-    result = -EISDIR;
+    LOG(WARNING, "failed to create entry");
+    result = -EIO;
     goto rollback_mtx_lock;
   }
   void* data = malloc(size);
   if (!data) {
     // mburakov: Entry is preserved, but it will be empty
+    LOG(WARNING, "failed to copy payload");
     result = -EIO;
     goto rollback_mtx_lock;
   }
@@ -189,6 +210,7 @@ static int MqttfsWrite(const char* path, const char* buf, size_t size,
   entry->data = data;
   entry->size = size;
   if (!MqttPublish(context->mqtt, path + 1, data, size)) {
+    LOG(WARNING, "failed to publish topic");
     result = -EIO;
     goto rollback_mtx_lock;
   }
@@ -197,7 +219,7 @@ rollback_mtx_lock:
     LOG(CRIT, "failed to unlock entries mutex");
     // TODO(mburakov): What to do here?
   }
-  return (int)size;
+  return result;
 }
 
 static void OnReaddirWalk(void* user, const struct Entry* entry) {
@@ -245,11 +267,37 @@ rollback_mtx_lock:
   return result;
 }
 
+static int MqttfsCreate(const char* path, mode_t mode,
+                        struct fuse_file_info* fi) {
+  (void)mode;
+  (void)fi;
+  struct Context* context = fuse_get_context()->private_data;
+  if (mtx_lock(&context->entries_mutex)) {
+    LOG(WARNING, "failed to lock entries mutex");
+    return -EIO;
+  }
+  int result = 0;
+  struct Entry* entry = EntrySearch(&context->entries, path);
+  if (!entry) {
+    LOG(WARNING, "failed to create entry");
+    result = -EIO;
+    goto rollback_mtx_lock;
+  }
+rollback_mtx_lock:
+  if (mtx_unlock(&context->entries_mutex)) {
+    LOG(CRIT, "failed to unlock entries mutex");
+    // TODO(mburakov): What to do here?
+  }
+  return result;
+}
+
 static const struct fuse_operations g_fuse_operations = {
     .getattr = MqttfsGetattr,
+    .mkdir = MqttfsMkdir,
     .read = MqttfsRead,
     .write = MqttfsWrite,
-    .readdir = MqttfsReaddir};
+    .readdir = MqttfsReaddir,
+    .create = MqttfsCreate};
 
 int main(int argc, char* argv[]) {
   int result = EXIT_FAILURE;
