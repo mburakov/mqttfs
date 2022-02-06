@@ -40,5 +40,7 @@ int MqttfsReaddir(const char* path, void* buf, fuse_fill_dir_t filler,
                   off_t offset, struct fuse_file_info* fi,
                   enum fuse_readdir_flags flags);
 int MqttfsCreate(const char* path, mode_t mode, struct fuse_file_info* fi);
+int MqttfsPoll(const char* path, struct fuse_file_info* fi,
+               struct fuse_pollhandle* ph, unsigned* reventsp);
 
 #endif  // MQTTFS_H_

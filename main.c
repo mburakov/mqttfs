@@ -63,14 +63,16 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
     LOG(WARNING, "failed to lock entries mutex");
     return;
   }
+
   struct Entry* entry = EntrySearch(&context->entries, topic);
   if (!entry) {
     LOG(WARNING, "failed to create entry");
     goto rollback_mtx_lock;
   }
+
   void* data = malloc(payloadlen);
   if (!data) {
-    // mburakov: Entry is preserved, but it will be empty
+    // mburakov: Entry is preserved, but it will be empty.
     LOG(WARNING, "failed to copy payload: %s", strerror(errno));
     goto rollback_mtx_lock;
   }
@@ -78,10 +80,25 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
   free(entry->data);
   entry->data = data;
   entry->size = payloadlen;
+
+  if (entry->ph) {
+    // mburakov: There's a blocked poll call on this entry.
+    entry->was_updated = 1;
+    int result = fuse_notify_poll(entry->ph);
+    fuse_pollhandle_destroy(entry->ph);
+    entry->ph = NULL;
+    if (result) {
+      // mburakov: Entry is preserved with its data, but poll will not wake.
+      LOG(ERR, "failed to wake poll: %s", strerror(result));
+      goto rollback_mtx_lock;
+    }
+  }
+
 rollback_mtx_lock:
   if (mtx_unlock(&context->entries_mutex)) {
     LOG(CRIT, "failed to unlock entries mutex");
-    // TODO(mburakov): What to do here?
+    // mburakov: This is unlikely to be possible, and there's nothing we can
+    // really do here except just logging this error message.
   }
 }
 
@@ -89,6 +106,7 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
   (void)conn;
   (void)cfg;
   // TODO(mburakov): How to bail out in a clean way?
+  // TODO(mburakov): Uses lazy initialization and fail in actual ops?
   struct Context* context = calloc(1, sizeof(struct Context));
   if (!context) {
     LOG(ERR, "Failed to allocate context");
@@ -105,6 +123,9 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
     LOG(ERR, "failed to create mqtt");
     goto rollback_mtx_init;
   }
+  cfg->direct_io = 1;
+  // TODO(mburakov): Support this:
+  // cfg->nullpath_ok = 1;
   return context;
 rollback_mtx_init:
   mtx_destroy(&context->entries_mutex);
@@ -130,7 +151,8 @@ static const struct fuse_operations g_fuse_operations = {
     .readdir = MqttfsReaddir,
     .init = MqttfsInit,
     .destroy = MqttfsDestroy,
-    .create = MqttfsCreate};
+    .create = MqttfsCreate,
+    .poll = MqttfsPoll};
 
 int main(int argc, char* argv[]) {
   int result = EXIT_FAILURE;

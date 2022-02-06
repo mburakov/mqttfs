@@ -26,6 +26,8 @@ struct Entry {
   size_t size;
   void* subs;
   _Bool dir;
+  _Bool was_updated;
+  struct fuse_pollhandle* ph;
 };
 
 typedef void (*EntryWalkCallback)(void* user, const struct Entry* node);
