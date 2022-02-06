@@ -30,15 +30,11 @@ Anything that you can imagine. I.e. try this, in the first terminal:
 ```
 mkdir /tmp/mqttfs
 ./mqttfs --host=pi /tmp/mqttfs
-```
-
-In the second terminal:
-```
 cd /tmp/mqttfs
 python -m http.server 8000
 ```
 
-In the third terminal:
+In the second terminal:
 ```
 curl http://localhost:8000/zigbee2mqtt/bridge/state
 ```
