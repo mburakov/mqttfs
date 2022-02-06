@@ -23,37 +23,28 @@
 #include "log.h"
 #include "mqttfs.h"
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
 int MqttfsRead(const char* path, char* buf, size_t size, off_t offset,
                struct fuse_file_info* fi) {
-  (void)fi;
+  (void)path;
+
+  if (offset) return 0;
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->entries_mutex)) {
     LOG(ERR, "failed to lock entries mutex");
     return -EIO;
   }
-  int result;
-
-  // mburakov: FUSE is expected to perform basic sanity checks, i.e. it won't
-  // allow to read a directory, including root.
-  const struct Entry* entry = EntryFind(&context->entries, path);
-  if (!entry) {
-    result = -ENOENT;
-    goto rollback_mtx_lock;
-  }
 
   // mburakov: Read shall return a number of bytes.
-  size_t read_end = (size_t)offset + size;
-  if (read_end > entry->size) read_end = entry->size;
-  size_t read_size = read_end - (size_t)offset;
-  const char* read_from = (const char*)entry->data + offset;
-  memcpy(buf, read_from, read_size);
-  result = (int)read_size;
+  const struct Entry* entry = (const struct Entry*)fi->fh;
+  size = MIN(size, entry->size);
+  memcpy(buf, entry->data, size);
 
-rollback_mtx_lock:
   if (mtx_unlock(&context->entries_mutex)) {
     // mburakov: This is unlikely to be possible, and there's nothing we can
     // really do here except just logging this error message.
     LOG(CRIT, "failed to unlock entries mutex");
   }
-  return result;
+  return (int)size;
 }

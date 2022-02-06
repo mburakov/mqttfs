@@ -25,25 +25,26 @@
 int MqttfsMkdir(const char* path, mode_t mode) {
   (void)mode;
 
+  int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->entries_mutex)) {
     LOG(ERR, "failed to lock entries mutex");
-    return -EIO;
+    return result;
   }
-  int result = 0;
 
   // mburakov: FUSE is expected to check the path to the directory, so in case
   // entries creation fails, there would be no leftovers. It is also expected
   // that it performs basic sanity checks, i.e. it won't allow to mkdir a root.
   struct Entry* entry = EntrySearch(&context->entries, path);
   if (!entry) {
-    result = -ENOENT;
+    LOG(ERR, "failed to preserve directory");
     goto rollback_mtx_lock;
   }
 
   // mburakov: Explicitly mark entry as a directory. There are no onther
   // potential evidences that we might utilise in this case.
   entry->dir = 1;
+  result = 0;
 
 rollback_mtx_lock:
   if (mtx_unlock(&context->entries_mutex)) {

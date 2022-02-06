@@ -28,23 +28,15 @@
 
 int MqttfsPoll(const char* path, struct fuse_file_info* fi,
                struct fuse_pollhandle* ph, unsigned* reventsp) {
-  (void)fi;
+  (void)path;
+
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->entries_mutex)) {
     LOG(ERR, "failed to lock entries mutex");
     return -EIO;
   }
-  int result = 0;
 
-  // mburakov: FUSE is expected to perform basic sanity checks, i.e. it won't
-  // allow to poll a directory including root.
-  struct Entry* entry = EntrySearch(&context->entries, path);
-  if (!entry) {
-    LOG(WARNING, "failed to create entry");
-    result = -EIO;
-    goto rollback_mtx_lock;
-  }
-
+  struct Entry* entry = (struct Entry*)fi->fh;
   if (ph) {
     // mburakov: Replace currently preserved ph with the new one. This
     // reproduces the behavior from the official poll sample.
@@ -61,11 +53,10 @@ int MqttfsPoll(const char* path, struct fuse_file_info* fi,
     entry->was_updated = 0;
   }
 
-rollback_mtx_lock:
   if (mtx_unlock(&context->entries_mutex)) {
     // mburakov: This is unlikely to be possible, and there's nothing we can
     // really do here except just logging this error message.
     LOG(CRIT, "failed to unlock entries mutex");
   }
-  return result;
+  return 0;
 }

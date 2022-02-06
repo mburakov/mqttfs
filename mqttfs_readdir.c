@@ -41,12 +41,13 @@ int MqttfsReaddir(const char* path, void* buf, fuse_fill_dir_t filler,
   (void)offset;
   (void)fi;
   (void)flags;
+
+  int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->entries_mutex)) {
     LOG(ERR, "failed to lock entries mutex");
-    return -EIO;
+    return result;
   }
-  int result = 0;
 
   // mburakov: This might be called for the root as well, but we don't really
   // have one. The first level entries already contains real items. So we add a
@@ -64,6 +65,7 @@ int MqttfsReaddir(const char* path, void* buf, fuse_fill_dir_t filler,
   filler(buf, "..", NULL, 0, (enum fuse_fill_dir_flags)0);
   struct ReaddirWalkContext user = {.buf = buf, .filler = filler};
   EntryWalk(entry->subs, OnReaddirWalk, &user);
+  result = 0;
 
 rollback_mtx_lock:
   if (mtx_unlock(&context->entries_mutex)) {

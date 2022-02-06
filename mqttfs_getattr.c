@@ -26,12 +26,13 @@
 int MqttfsGetattr(const char* path, struct stat* stbuf,
                   struct fuse_file_info* fi) {
   (void)fi;
+
+  int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->entries_mutex)) {
     LOG(ERR, "failed to lock entries mutex");
-    return -EIO;
+    return result;
   }
-  int result = 0;
 
   // mburakov: This might be called for the root as well, but we don't really
   // have one. The first level entries already contains real items. So we add a
@@ -56,6 +57,7 @@ int MqttfsGetattr(const char* path, struct stat* stbuf,
     stbuf->st_nlink = 1;
     stbuf->st_size = (off_t)entry->size;
   }
+  result = 0;
 
 rollback_mtx_lock:
   if (mtx_unlock(&context->entries_mutex)) {

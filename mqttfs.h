@@ -32,6 +32,7 @@ struct Context {
 int MqttfsGetattr(const char* path, struct stat* stbuf,
                   struct fuse_file_info* fi);
 int MqttfsMkdir(const char* path, mode_t mode);
+int MqttfsOpen(const char* path, struct fuse_file_info* fi);
 int MqttfsRead(const char* path, char* buf, size_t size, off_t offset,
                struct fuse_file_info* fi);
 int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,

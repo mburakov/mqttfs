@@ -16,25 +16,13 @@
  */
 
 #include <errno.h>
-#include <stdlib.h>
-#include <string.h>
 #include <threads.h>
 
 #include "entry.h"
 #include "log.h"
-#include "mqtt.h"
 #include "mqttfs.h"
 
-static void SwapPointers(void** a, void** b) {
-  void* c = *a;
-  *a = *b;
-  *b = c;
-}
-
-int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
-                struct fuse_file_info* fi) {
-  (void)offset;
-
+int MqttfsOpen(const char* path, struct fuse_file_info* fi) {
   int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->entries_mutex)) {
@@ -42,26 +30,19 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
     return result;
   }
 
-  void* data = malloc(size);
-  if (!data) {
-    LOG(ERR, "failed to preserve file contents");
+  // mburakov: FUSE is expected to perform basic sanity checks, i.e. it won't
+  // allow to open a directory, including a root.
+  const struct Entry* entry = EntryFind(&context->entries, path);
+  if (!entry) {
+    result = -ENOENT;
     goto rollback_mtx_lock;
   }
 
-  if (!MqttPublish(context->mqtt, path + 1, buf, size)) {
-    LOG(WARNING, "failed to publish topic");
-    goto rollback_malloc;
-  }
+  // mburakov: Preserve entry, which has a static address. This would allow to
+  // directly access the entry without finding it by its path.
+  fi->fh = (uint64_t)entry;
+  result = 0;
 
-  // mburakov: Write shall return a number of bytes.
-  memcpy(data, buf, size);
-  struct Entry* entry = (struct Entry*)fi->fh;
-  SwapPointers(&entry->data, &data);
-  entry->size = size;
-  result = (int)size;
-
-rollback_malloc:
-  free(data);
 rollback_mtx_lock:
   if (mtx_unlock(&context->entries_mutex)) {
     // mburakov: This is unlikely to be possible, and there's nothing we can

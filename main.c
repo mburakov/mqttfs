@@ -104,7 +104,6 @@ rollback_mtx_lock:
 
 static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
   (void)conn;
-  (void)cfg;
   // TODO(mburakov): How to bail out in a clean way?
   // TODO(mburakov): Uses lazy initialization and fail in actual ops?
   struct Context* context = calloc(1, sizeof(struct Context));
@@ -124,8 +123,6 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
     goto rollback_mtx_init;
   }
   cfg->direct_io = 1;
-  // TODO(mburakov): Support this:
-  // cfg->nullpath_ok = 1;
   return context;
 rollback_mtx_init:
   mtx_destroy(&context->entries_mutex);
@@ -146,6 +143,7 @@ static void MqttfsDestroy(void* private_data) {
 static const struct fuse_operations g_fuse_operations = {
     .getattr = MqttfsGetattr,
     .mkdir = MqttfsMkdir,
+    .open = MqttfsOpen,
     .read = MqttfsRead,
     .write = MqttfsWrite,
     .readdir = MqttfsReaddir,
