@@ -27,7 +27,7 @@
 
 #define UNCONST(op) ((void*)(ptrdiff_t)op)
 
-// mburakov: musl does not implement twalk_r
+// mburakov: musl does not implement twalk_r.
 static void* g_twalk_closure;
 
 static void EntryWalkCallbackTrampoline(const void* nodep, VISIT which,
@@ -104,7 +104,7 @@ struct Entry* EntrySearch(void** rootp, const char* path) {
     const struct Entry key = {.name = item};
     pentry = tsearch(&key, rootp, EntryCompare);
     if (!pentry) {
-      // mburakov: In case anything was created before, it persists
+      // mburakov: In case anything was created before, it persists.
       LOG(WARNING, "failed to insert entry");
       goto rollback_strdup;
     }
@@ -112,7 +112,7 @@ struct Entry* EntrySearch(void** rootp, const char* path) {
       LOG(DEBUG, "creating new entry %s", item);
       struct Entry* entry = EntryCreate(item);
       if (!entry) {
-        // mburakov: In case anything was created before, it persists
+        // mburakov: In case anything was created before, it persists.
         LOG(WARNING, "failed to create entry");
         tdelete(&key, rootp, EntryCompare);
         goto rollback_strdup;
