@@ -40,7 +40,7 @@ static void MqttMessageCallbackTrampoline(
                     (size_t)message->payloadlen);
 }
 
-struct Mqtt* MqttCreate(const char* host, int port, int keepalive,
+struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
                         MqttMessageCallback callback, void* user) {
   int runtime_version = mosquitto_lib_version(NULL, NULL, NULL);
   LOG(INFO, "using libmosquitto version %d (built against version %d)",

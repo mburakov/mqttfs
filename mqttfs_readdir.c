@@ -16,20 +16,20 @@
  */
 
 #include <errno.h>
+#include <fuse.h>
 #include <string.h>
+#include <sys/types.h>
 #include <threads.h>
 
-#include "entry.h"
 #include "log.h"
 #include "mqttfs.h"
+#include "node.h"
 
-struct ReaddirWalkContext {
-  void* buf;
-  fuse_fill_dir_t filler;
-};
-
-static void OnReaddirWalk(void* user, const struct Entry* entry) {
-  const struct ReaddirWalkContext* context = user;
+static void OnReaddir(void* user, const struct Node* entry) {
+  struct {
+    void* buf;
+    fuse_fill_dir_t filler;
+  }* context = user;
   // TODO(mburakov): Handle filler errors!
   context->filler(context->buf, entry->name, NULL, 0,
                   (enum fuse_fill_dir_flags)0);
@@ -38,40 +38,25 @@ static void OnReaddirWalk(void* user, const struct Entry* entry) {
 int MqttfsReaddir(const char* path, void* buf, fuse_fill_dir_t filler,
                   off_t offset, struct fuse_file_info* fi,
                   enum fuse_readdir_flags flags) {
+  (void)path;
   (void)offset;
-  (void)fi;
   (void)flags;
 
-  int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->entries_mutex)) {
-    LOG(ERR, "failed to lock entries mutex");
-    return result;
+  if (mtx_lock(&context->root_mutex)) {
+    LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
+    return -EIO;
   }
 
-  // mburakov: This might be called for the root as well, but we don't really
-  // have one. The first level entries already contains real items. So we add a
-  // virtual root here just for the convenience.
-  const struct Entry root = {.subs = context->entries};
-  const struct Entry* entry =
-      strcmp(path, "/") ? EntryFind(&root.subs, path) : &root;
-  if (!entry) {
-    result = -ENOENT;
-    goto rollback_mtx_lock;
-  }
-
-  // TODO(mburakov): Handle filler errors.
+  const struct Node* node = (const struct Node*)fi->fh;
   filler(buf, ".", NULL, 0, (enum fuse_fill_dir_flags)0);
   filler(buf, "..", NULL, 0, (enum fuse_fill_dir_flags)0);
-  struct ReaddirWalkContext user = {.buf = buf, .filler = filler};
-  EntryWalk(entry->subs, OnReaddirWalk, &user);
-  result = 0;
+  struct {
+    void* buf;
+    fuse_fill_dir_t filler;
+  } user = {buf, filler};
+  NodeForEach(node->as_dir.subs, OnReaddir, &user);
 
-rollback_mtx_lock:
-  if (mtx_unlock(&context->entries_mutex)) {
-    // mburakov: This is unlikely to be possible, and there's nothing we can
-    // really do here except just logging this error message.
-    LOG(CRIT, "failed to unlock entries mutex");
-  }
-  return result;
+  mtx_unlock(&context->root_mutex);
+  return 0;
 }

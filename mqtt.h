@@ -19,10 +19,12 @@
 #define MQTTFS_MQTT_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
-typedef void (*MqttMessageCallback)(void*, const char*, const void*, size_t);
+typedef void (*MqttMessageCallback)(void* user, const char* topic,
+                                    const void* payload, size_t payload_len);
 
-struct Mqtt* MqttCreate(const char* host, int port, int keepalive,
+struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
                         MqttMessageCallback callback, void* user);
 _Bool MqttPublish(struct Mqtt* mqtt, const char* topic, const void* payload,
                   size_t payload_len);

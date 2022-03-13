@@ -16,43 +16,64 @@
  */
 
 #include <errno.h>
+#include <fuse.h>
+#include <stdlib.h>
+#include <string.h>
 #include <threads.h>
 
-#include "entry.h"
 #include "log.h"
 #include "mqttfs.h"
+#include "node.h"
 
 int MqttfsCreate(const char* path, mode_t mode, struct fuse_file_info* fi) {
   (void)mode;
 
-  int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->entries_mutex)) {
-    LOG(ERR, "failed to lock entries mutex");
-    return result;
+  if (mtx_lock(&context->root_mutex)) {
+    LOG(ERR, "failed to lock root mutex");
+    return -EIO;
   }
 
-  // mburakov: FUSE is expected to check the path to the directory, so in case
-  // entries creation fails, there would be no leftovers. It is also expected
-  // that it performs basic sanity checks, i.e. it won't allow to create a file
-  // that already exists or file with the same name as existing directory (i.e.
-  // a root directory), etc.
-  struct Entry* entry = EntrySearch(&context->entries, path);
-  if (!entry) {
-    LOG(ERR, "failed to preserve file");
+  int result;
+  char* path_copy = strdup(path);
+  if (!path_copy) {
+    LOG(ERR, "failed to copy path: %s", strerror(errno));
+    result = -EIO;
     goto rollback_mtx_lock;
   }
 
-  // mburakov: Preserve entry, which has a static address. This would allow to
-  // directly access the entry without finding it by its path.
-  fi->fh = (uint64_t)entry;
+  // mburakov: FUSE is expected to provide a valid normalized path here.
+  char* filename = strrchr(path_copy, '/');
+  *filename++ = 0;
+
+  struct Node* parent = NodeFind(context->root_node, path_copy);
+  if (!parent) {
+    result = -ENOENT;
+    goto rollback_strdup;
+  }
+  if (!parent->is_dir) {
+    result = -ENOTDIR;
+    goto rollback_strdup;
+  }
+
+  struct Node* node = NodeCreate(filename, 0);
+  if (!node) {
+    LOG(ERR, "failed to create node");
+    result = -EIO;
+    goto rollback_strdup;
+  }
+  if (!NodeInsert(parent, node)) {
+    LOG(ERR, "failed to insert node");
+    NodeDestroy(node);
+    result = -EIO;
+    goto rollback_strdup;
+  }
+  fi->fh = (uint64_t)node;
   result = 0;
 
+rollback_strdup:
+  free(path_copy);
 rollback_mtx_lock:
-  if (mtx_unlock(&context->entries_mutex)) {
-    // mburakov: This is unlikely to be possible, and there's nothing we can
-    // really do here except just logging this error message.
-    LOG(CRIT, "failed to unlock entries mutex");
-  }
+  mtx_unlock(&context->root_mutex);
   return result;
 }

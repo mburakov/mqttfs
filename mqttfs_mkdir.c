@@ -16,41 +16,61 @@
  */
 
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 #include <threads.h>
 
-#include "entry.h"
 #include "log.h"
 #include "mqttfs.h"
+#include "node.h"
 
 int MqttfsMkdir(const char* path, mode_t mode) {
   (void)mode;
 
-  int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->entries_mutex)) {
-    LOG(ERR, "failed to lock entries mutex");
-    return result;
+  if (mtx_lock(&context->root_mutex)) {
+    LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
+    return -EIO;
   }
 
-  // mburakov: FUSE is expected to check the path to the directory, so in case
-  // entries creation fails, there would be no leftovers. It is also expected
-  // that it performs basic sanity checks, i.e. it won't allow to mkdir a root.
-  struct Entry* entry = EntrySearch(&context->entries, path);
-  if (!entry) {
-    LOG(ERR, "failed to preserve directory");
+  int result;
+  char* path_copy = strdup(path);
+  if (!path_copy) {
+    LOG(ERR, "failed to copy path: %s", strerror(errno));
+    result = -EIO;
     goto rollback_mtx_lock;
   }
 
-  // mburakov: Explicitly mark entry as a directory. There are no onther
-  // potential evidences that we might utilise in this case.
-  entry->dir = 1;
+  // mburakov: FUSE is expected to provide a valid normalized path here.
+  char* filename = strrchr(path_copy, '/');
+  *filename++ = 0;
+
+  struct Node* parent = NodeFind(context->root_node, path_copy);
+  if (!parent) {
+    result = -ENOENT;
+    goto rollback_strdup;
+  }
+  if (!parent->is_dir) {
+    result = -ENOTDIR;
+    goto rollback_strdup;
+  }
+
+  struct Node* node = NodeCreate(filename, 1);
+  if (!node) {
+    LOG(ERR, "failed to create node");
+    result = -EIO;
+    goto rollback_strdup;
+  }
+  if (!NodeInsert(parent, node)) {
+    LOG(ERR, "failed to insert node");
+    NodeDestroy(node);
+    result = -EIO;
+  }
   result = 0;
 
+rollback_strdup:
+  free(path_copy);
 rollback_mtx_lock:
-  if (mtx_unlock(&context->entries_mutex)) {
-    // mburakov: This is unlikely to be possible, and there's nothing we can
-    // really do here except just logging this error message.
-    LOG(CRIT, "failed to unlock entries mutex");
-  }
+  mtx_unlock(&context->root_mutex);
   return result;
 }

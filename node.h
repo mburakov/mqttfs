@@ -15,26 +15,35 @@
  * along with mqttfs.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef MQTTFS_ENTRY_H_
-#define MQTTFS_ENTRY_H_
+#ifndef MQTTFS_NODE_H_
+#define MQTTFS_NODE_H_
 
 #include <stddef.h>
 
-struct Entry {
-  const char* name;
-  void* data;
-  size_t size;
-  void* subs;
-  _Bool dir;
-  _Bool was_updated;
-  struct fuse_pollhandle* ph;
+struct fuse_pollhandle;
+
+struct Node {
+  const char* const name;
+  const _Bool is_dir;
+  union {
+    struct {
+      void* subs;
+    } as_dir;
+    struct {
+      void* data;
+      size_t size;
+      _Bool was_updated;
+      struct fuse_pollhandle* ph;
+    } as_file;
+  };
 };
 
-typedef void (*EntryWalkCallback)(void* user, const struct Entry* node);
+typedef void (*NodeCallback)(void* user, const struct Node* node);
 
-const struct Entry* EntryFind(void* const* rootp, const char* path);
-struct Entry* EntrySearch(void** rootp, const char* path);
-void EntryWalk(const void* root, EntryWalkCallback callback, void* user);
-void EntryDestroy(void* root);
+struct Node* NodeCreate(const char* name, _Bool is_dir);
+struct Node* NodeFind(struct Node* node, char* path);
+_Bool NodeInsert(struct Node* parent, const struct Node* node);
+void NodeForEach(const struct Node* node, NodeCallback callback, void* user);
+void NodeDestroy(struct Node* node);
 
-#endif  // MQTTFS_ENTRY_H_
+#endif  // MQTTFS_NODE_H_

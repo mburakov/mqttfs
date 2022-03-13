@@ -16,38 +16,45 @@
  */
 
 #include <errno.h>
+#include <fuse.h>
+#include <stdlib.h>
+#include <string.h>
 #include <threads.h>
 
-#include "entry.h"
 #include "log.h"
 #include "mqttfs.h"
+#include "node.h"
 
 int MqttfsOpen(const char* path, struct fuse_file_info* fi) {
-  int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->entries_mutex)) {
-    LOG(ERR, "failed to lock entries mutex");
-    return result;
+  if (mtx_lock(&context->root_mutex)) {
+    LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
+    return -EIO;
   }
 
-  // mburakov: FUSE is expected to perform basic sanity checks, i.e. it won't
-  // allow to open a directory, including a root.
-  const struct Entry* entry = EntryFind(&context->entries, path);
-  if (!entry) {
-    result = -ENOENT;
+  int result;
+  char* path_copy = strdup(path);
+  if (!path_copy) {
+    LOG(ERR, "failed to copy path: %s", strerror(errno));
+    result = -EIO;
     goto rollback_mtx_lock;
   }
 
-  // mburakov: Preserve entry, which has a static address. This would allow to
-  // directly access the entry without finding it by its path.
-  fi->fh = (uint64_t)entry;
+  const struct Node* node = NodeFind(context->root_node, path_copy);
+  if (!node) {
+    result = -ENOENT;
+    goto rollback_strdup;
+  }
+  if (node->is_dir) {
+    result = -EISDIR;
+    goto rollback_strdup;
+  }
+  fi->fh = (uint64_t)node;
   result = 0;
 
+rollback_strdup:
+  free(path_copy);
 rollback_mtx_lock:
-  if (mtx_unlock(&context->entries_mutex)) {
-    // mburakov: This is unlikely to be possible, and there's nothing we can
-    // really do here except just logging this error message.
-    LOG(CRIT, "failed to unlock entries mutex");
-  }
+  mtx_unlock(&context->root_mutex);
   return result;
 }

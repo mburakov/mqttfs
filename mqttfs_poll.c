@@ -20,9 +20,9 @@
 #include <sys/poll.h>
 #include <threads.h>
 
-#include "entry.h"
 #include "log.h"
 #include "mqttfs.h"
+#include "node.h"
 
 // TODO(mburakov): I have no clue what goes on here, it's probably all wrong.
 
@@ -31,32 +31,28 @@ int MqttfsPoll(const char* path, struct fuse_file_info* fi,
   (void)path;
 
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->entries_mutex)) {
-    LOG(ERR, "failed to lock entries mutex");
+  if (mtx_lock(&context->root_mutex)) {
+    LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
     return -EIO;
   }
 
-  struct Entry* entry = (struct Entry*)fi->fh;
+  struct Node* node = (struct Node*)fi->fh;
   if (ph) {
     // mburakov: Replace currently preserved ph with the new one. This
     // reproduces the behavior from the official poll sample.
-    if (entry->ph) {
-      fuse_pollhandle_destroy(entry->ph);
+    if (node->as_file.ph) {
+      fuse_pollhandle_destroy(node->as_file.ph);
     }
-    entry->ph = ph;
+    node->as_file.ph = ph;
   }
 
   // mburakov: This assumes entries are always writable.
   *reventsp |= POLLOUT;
-  if (entry->was_updated) {
+  if (node->as_file.was_updated) {
     *reventsp |= POLLIN;
-    entry->was_updated = 0;
+    node->as_file.was_updated = 0;
   }
 
-  if (mtx_unlock(&context->entries_mutex)) {
-    // mburakov: This is unlikely to be possible, and there's nothing we can
-    // really do here except just logging this error message.
-    LOG(CRIT, "failed to unlock entries mutex");
-  }
+  mtx_unlock(&context->root_mutex);
   return 0;
 }

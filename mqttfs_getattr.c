@@ -16,54 +16,63 @@
  */
 
 #include <errno.h>
+#include <fuse.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <threads.h>
 
-#include "entry.h"
 #include "log.h"
 #include "mqttfs.h"
+#include "node.h"
 
 int MqttfsGetattr(const char* path, struct stat* stbuf,
                   struct fuse_file_info* fi) {
-  (void)fi;
+  const struct Node* node = NULL;
+  if (fi) {
+    node = (const struct Node*)fi->fh;
+    if (node->is_dir) {
+      stbuf->st_mode = S_IFDIR | 0755;
+      stbuf->st_nlink = 2;
+      return 0;
+    }
+  }
 
-  int result = -EIO;
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->entries_mutex)) {
-    LOG(ERR, "failed to lock entries mutex");
-    return result;
+  if (mtx_lock(&context->root_mutex)) {
+    LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
+    return -EIO;
   }
 
-  // mburakov: This might be called for the root as well, but we don't really
-  // have one. The first level entries already contains real items. So we add a
-  // virtual root here just for the convenience.
-  const struct Entry root = {.subs = context->entries};
-  const struct Entry* entry =
-      strcmp(path, "/") ? EntryFind(&root.subs, path) : &root;
-  if (!entry) {
-    result = -ENOENT;
-    goto rollback_mtx_lock;
+  int result;
+  if (!node) {
+    char* path_copy = strdup(path);
+    if (!path_copy) {
+      LOG(ERR, "failed to copy path: %s", strerror(errno));
+      result = -EIO;
+      goto rollback_mtx_lock;
+    }
+
+    node = NodeFind(context->root_node, path_copy);
+    free(path_copy);
+    if (!node) {
+      result = -ENOENT;
+      goto rollback_mtx_lock;
+    }
   }
 
-  // mburakov: Client created directory entries are always marked as such, but
-  // not the ones received from the broker. The latter are reported as
-  // directories when they have any subentries.
   memset(stbuf, 0, sizeof(struct stat));
-  if (entry->dir || entry->subs) {
+  if (node->is_dir) {
     stbuf->st_mode = S_IFDIR | 0755;
     stbuf->st_nlink = 2;
   } else {
     stbuf->st_mode = S_IFREG | 0644;
     stbuf->st_nlink = 1;
-    stbuf->st_size = (off_t)entry->size;
+    stbuf->st_size = (off_t)node->as_file.size;
   }
   result = 0;
 
 rollback_mtx_lock:
-  if (mtx_unlock(&context->entries_mutex)) {
-    // mburakov: This is unlikely to be possible, and there's nothing we can
-    // really do here except just logging this error message.
-    LOG(CRIT, "failed to unlock entries mutex");
-  }
+  mtx_unlock(&context->root_mutex);
   return result;
 }

@@ -15,173 +15,109 @@
  * along with mqttfs.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <arpa/inet.h>
 #include <errno.h>
-#include <stdio.h>
+#include <fuse.h>
+#include <netinet/in.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
 
-#include "entry.h"
 #include "log.h"
 #include "mqtt.h"
 #include "mqttfs.h"
+#include "node.h"
 
-static struct Options {
-  const char* host;
-  int port;
-  int keepalive;
-  int show_help;
-} g_options;
-
-static const struct fuse_opt g_options_spec[] = {
-    {"--host=%s", offsetof(struct Options, host), 0},
-    {"--port=%d", offsetof(struct Options, port), 0},
-    {"--keepalive=%d", offsetof(struct Options, keepalive), 0},
-    {"-h", offsetof(struct Options, show_help), 1},
-    {"--help", offsetof(struct Options, show_help), 1},
-    FUSE_OPT_END};
-
-static void ShowHelp(struct fuse_args* args) {
-  printf("Usage: %s [options] <mountpoint>\n\n", args->argv[0]);
-  printf(
-      "File-system specific options:\n"
-      "    --host=S               Hostname or IP address of MQTT broker\n"
-      "                           (default: \"localhost\")\n"
-      "    --port=N               TCP port of MQTT broker\n"
-      "                           (default: 1883)\n"
-      "    --keepalive=N          Keepalive parameter of MQTT connection\n"
-      "                           (default: 60)\n"
-      "\n");
-  printf("FUSE options:\n");
-  fuse_lib_help(args);
+static struct Options ParseOptions() {
+  struct Options options = {
+      .host = "127.0.0.1",
+      .port = 1883,
+      .keepalive = 60,
+  };
+  const char* maybe_host = getenv("MQTT_HOST");
+  if (maybe_host) {
+    if (inet_addr(maybe_host) == INADDR_NONE) {
+      LOG(ERR, "invalid host value provided");
+      exit(EINVAL);
+    }
+    options.host = maybe_host;
+  }
+  const char* maybe_port = getenv("MQTT_PORT");
+  if (maybe_port) {
+    int port = atoi(maybe_port);
+    if (port <= 0 || UINT16_MAX < port) {
+      LOG(ERR, "invalid port value provided");
+      exit(EINVAL);
+    }
+    options.port = (uint16_t)port;
+  }
+  const char* maybe_keepalive = getenv("MQTT_KEEPALIVE");
+  if (maybe_keepalive) {
+    int keepalive = atoi(maybe_keepalive);
+    if (keepalive <= 0 || UINT16_MAX < keepalive) {
+      LOG(ERR, "invalid keepalive value provided");
+      exit(EINVAL);
+    }
+    options.keepalive = (uint16_t)keepalive;
+  }
+  return options;
 }
 
 static void OnMqttMessage(void* user, const char* topic, const void* payload,
-                          size_t payloadlen) {
+                          size_t payload_len) {
   struct Context* context = user;
-  if (mtx_lock(&context->entries_mutex)) {
-    LOG(WARNING, "failed to lock entries mutex");
+  if (!mtx_lock(&context->root_mutex)) {
+    LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
     return;
   }
 
-  struct Entry* entry = EntrySearch(&context->entries, topic);
-  if (!entry) {
-    LOG(WARNING, "failed to create entry");
-    goto rollback_mtx_lock;
-  }
+  // TODO(mburakov): Create a copy of a filesystem and work on the copy. When
+  // all the modifications succeeded, copy it over the old one, and release the
+  // latter.
 
-  void* data = malloc(payloadlen);
-  if (!data) {
-    // mburakov: Entry is preserved, but it will be empty.
-    LOG(WARNING, "failed to copy payload: %s", strerror(errno));
-    goto rollback_mtx_lock;
-  }
-  memcpy(data, payload, payloadlen);
-  free(entry->data);
-  entry->data = data;
-  entry->size = payloadlen;
-
-  if (entry->ph) {
-    // mburakov: There's a blocked poll call on this entry.
-    entry->was_updated = 1;
-    int result = fuse_notify_poll(entry->ph);
-    fuse_pollhandle_destroy(entry->ph);
-    entry->ph = NULL;
-    if (result) {
-      // mburakov: Entry is preserved with its data, but poll will not wake.
-      LOG(ERR, "failed to wake poll: %s", strerror(result));
-      goto rollback_mtx_lock;
-    }
-  }
+  (void)topic;
+  (void)payload;
+  (void)payload_len;
 
 rollback_mtx_lock:
-  if (mtx_unlock(&context->entries_mutex)) {
-    LOG(CRIT, "failed to unlock entries mutex");
-    // mburakov: This is unlikely to be possible, and there's nothing we can
-    // really do here except just logging this error message.
-  }
+  mtx_unlock(&context->root_mutex);
 }
 
 static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
   (void)conn;
-  // TODO(mburakov): How to bail out in a clean way?
-  // TODO(mburakov): Uses lazy initialization and fail in actual ops?
-  struct Context* context = calloc(1, sizeof(struct Context));
-  if (!context) {
-    LOG(ERR, "Failed to allocate context");
-    return NULL;
-  }
-  if (mtx_init(&context->entries_mutex, mtx_plain)) {
-    LOG(ERR, "failed to initialize entries mutex");
-    goto rollback_context;
-  }
-  context->has_entries_mutex = 1;
-  context->mqtt = MqttCreate(g_options.host, g_options.port,
-                             g_options.keepalive, OnMqttMessage, context);
-  if (!context->mqtt) {
-    LOG(ERR, "failed to create mqtt");
-    goto rollback_mtx_init;
-  }
-  cfg->direct_io = 1;
+  // TODO(mburakov): Implement lazy connecting.
+  struct Context* context = fuse_get_context()->private_data;
+  context->mqtt =
+      MqttCreate(context->options.host, context->options.port,
+                 context->options.keepalive, OnMqttMessage, context);
+  cfg->nullpath_ok = 1;
   return context;
-rollback_mtx_init:
-  mtx_destroy(&context->entries_mutex);
-rollback_context:
-  free(context);
-  return NULL;
 }
-
-static void MqttfsDestroy(void* private_data) {
-  struct Context* context = private_data;
-  if (!context) return;
-  if (context->mqtt) MqttDestroy(context->mqtt);
-  if (context->has_entries_mutex) mtx_destroy(&context->entries_mutex);
-  if (context->entries) EntryDestroy(context->entries);
-  free(context);
-}
-
-static const struct fuse_operations g_fuse_operations = {
-    .getattr = MqttfsGetattr,
-    .mkdir = MqttfsMkdir,
-    .open = MqttfsOpen,
-    .read = MqttfsRead,
-    .write = MqttfsWrite,
-    .readdir = MqttfsReaddir,
-    .init = MqttfsInit,
-    .destroy = MqttfsDestroy,
-    .create = MqttfsCreate,
-    .poll = MqttfsPoll};
 
 int main(int argc, char* argv[]) {
-  int result = EXIT_FAILURE;
-  struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-  g_options.host = strdup("localhost");
-  if (!g_options.host) {
-    LOG(ERR, "failed to allocate hostname");
-    goto rollback_fuse_args_init;
+  struct Context context = {
+      .options = ParseOptions(),
+      .root_node = NodeCreate("/", 1),
+  };
+  if (mtx_init(&context.root_mutex, mtx_plain) != thrd_success) {
+    LOG(ERR, "failed to initialize mutex: %s", strerror(errno));
+    exit(errno);
   }
-  g_options.port = 1883;
-  g_options.keepalive = 60;
-  if (fuse_opt_parse(&args, &g_options, g_options_spec, NULL) == -1) {
-    LOG(ERR, "failed to parse commandline");
-    goto rollback_fuse_args_init;
-  }
-  if (g_options.show_help) {
-    ShowHelp(&args);
-    result = EXIT_SUCCESS;
-    goto rollback_fuse_args_init;
-  }
-  if (0 > g_options.port || g_options.port > UINT16_MAX) {
-    LOG(ERR, "invalid port number %d", g_options.port);
-    goto rollback_fuse_args_init;
-  }
-  if (0 > g_options.keepalive) {
-    LOG(ERR, "invalid keepalive %d", g_options.keepalive);
-    goto rollback_fuse_args_init;
-  }
-  result = fuse_main(args.argc, args.argv, &g_fuse_operations, NULL);
-rollback_fuse_args_init:
-  fuse_opt_free_args(&args);
-  LOG(INFO, "clean shutdown");
+  static const struct fuse_operations kFuseOperations = {
+      .getattr = MqttfsGetattr,
+      .mkdir = MqttfsMkdir,
+      .open = MqttfsOpen,
+      .read = MqttfsRead,
+      .write = MqttfsWrite,
+      .opendir = MqttfsOpendir,
+      .readdir = MqttfsReaddir,
+      .init = MqttfsInit,
+      .create = MqttfsCreate,
+      .poll = MqttfsPoll,
+  };
+  int result = fuse_main(argc, argv, &kFuseOperations, &context);
+  mtx_destroy(&context.root_mutex);
+  NodeDestroy(context.root_node);
   return result;
 }

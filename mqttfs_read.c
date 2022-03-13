@@ -19,9 +19,9 @@
 #include <string.h>
 #include <threads.h>
 
-#include "entry.h"
 #include "log.h"
 #include "mqttfs.h"
+#include "node.h"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -31,20 +31,16 @@ int MqttfsRead(const char* path, char* buf, size_t size, off_t offset,
 
   if (offset) return 0;
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->entries_mutex)) {
-    LOG(ERR, "failed to lock entries mutex");
+  if (mtx_lock(&context->root_mutex)) {
+    LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
     return -EIO;
   }
 
   // mburakov: Read shall return a number of bytes.
-  const struct Entry* entry = (const struct Entry*)fi->fh;
-  size = MIN(size, entry->size);
-  memcpy(buf, entry->data, size);
+  const struct Node* node = (const struct Node*)fi->fh;
+  size = MIN(size, node->as_file.size);
+  memcpy(buf, node->as_file.data, size);
 
-  if (mtx_unlock(&context->entries_mutex)) {
-    // mburakov: This is unlikely to be possible, and there's nothing we can
-    // really do here except just logging this error message.
-    LOG(CRIT, "failed to unlock entries mutex");
-  }
+  mtx_unlock(&context->root_mutex);
   return (int)size;
 }

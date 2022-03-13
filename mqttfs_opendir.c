@@ -16,6 +16,7 @@
  */
 
 #include <errno.h>
+#include <fuse.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
@@ -24,33 +25,35 @@
 #include "mqttfs.h"
 #include "node.h"
 
-int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
-                struct fuse_file_info* fi) {
-  (void)path;
-  (void)offset;
-
+int MqttfsOpendir(const char* path, struct fuse_file_info* fi) {
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->root_mutex)) {
-    LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
+    LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
     return -EIO;
   }
 
   int result;
-  void* data = malloc(size);
-  if (!data) {
-    LOG(ERR, "failed to preserve file contents");
+  char* path_copy = strdup(path);
+  if (!path_copy) {
+    LOG(ERR, "failed to copy path: %s", strerror(errno));
     result = -EIO;
     goto rollback_mtx_lock;
   }
 
-  // mburakov: Write shall return a number of bytes.
-  memcpy(data, buf, size);
-  struct Node* node = (struct Node*)fi->fh;
-  free(node->as_file.data);
-  node->as_file.data = data;
-  node->as_file.size = size;
-  result = (int)size;
+  const struct Node* node = NodeFind(context->root_node, path_copy);
+  if (!node) {
+    result = -ENOENT;
+    goto rollback_strdup;
+  }
+  if (!node->is_dir) {
+    result = -ENOTDIR;
+    goto rollback_strdup;
+  }
+  fi->fh = (uint64_t)node;
+  result = 0;
 
+rollback_strdup:
+  free(path_copy);
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
   return result;
