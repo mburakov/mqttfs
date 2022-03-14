@@ -181,7 +181,8 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
       MqttCreate(context->options.host, context->options.port,
                  context->options.keepalive, OnMqttMessage, context);
   cfg->direct_io = 1;
-  cfg->nullpath_ok = 1;
+  // TODO(mburakov): This breaks write call.
+  // cfg->nullpath_ok = 1;
   return context;
 }
 

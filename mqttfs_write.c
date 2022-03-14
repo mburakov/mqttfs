@@ -21,6 +21,7 @@
 #include <threads.h>
 
 #include "log.h"
+#include "mqtt.h"
 #include "mqttfs.h"
 #include "node.h"
 
@@ -39,6 +40,12 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
   void* data = malloc(size);
   if (!data) {
     LOG(ERR, "failed to preserve file contents");
+    result = -EIO;
+    goto rollback_mtx_lock;
+  }
+
+  if (!MqttPublish(context->mqtt, path + 1, buf, size)) {
+    LOG(ERR, "failed to publish topic");
     result = -EIO;
     goto rollback_mtx_lock;
   }
