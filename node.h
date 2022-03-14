@@ -30,6 +30,7 @@ struct Node {
       void* subs;
     } as_dir;
     struct {
+      char* topic;
       void* data;
       size_t size;
       _Bool was_updated;

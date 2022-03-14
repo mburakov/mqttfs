@@ -87,7 +87,7 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
   memcpy(payload_copy, payload, payload_len);
   char* token = strtok(path_copy, "/");
   if (!token) {
-    LOG(WARNING, "Invalid topic provided");
+    LOG(WARNING, "invalid topic provided");
     free(payload_copy);
     goto rollback_strdup;
   }
@@ -103,7 +103,7 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
   if (!token) {
     // mburakov: We are at the end of path, node points to the exact item.
     if (node->is_dir) {
-      LOG(WARNING, "Ignoring write to a directory node");
+      LOG(WARNING, "ignoring write to a directory node");
       free(payload_copy);
       goto rollback_strdup;
     }
@@ -119,14 +119,14 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
     node->as_file.ph = NULL;
     if (result) {
       // mburakov: Entry is preserved with its data, but poll will not wake.
-      LOG(ERR, "failed to wake poll: %s", strerror(result));
+      LOG(WARNING, "failed to wake poll: %s", strerror(result));
     }
     goto rollback_strdup;
   }
 
   // mburakov: Got to the last available node, but it's not the end of the path.
   if (!node->is_dir) {
-    LOG(WARNING, "Ignoring descend into a non-directory node");
+    LOG(WARNING, "ignoring descend into a non-directory node");
     free(payload_copy);
     goto rollback_strdup;
   }
@@ -139,7 +139,7 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
     token = strtok(NULL, "/");
     next_node = NodeCreate(name, token != NULL);
     if (!next_node) {
-      LOG(ERR, "Failed to create node");
+      LOG(ERR, "failed to create node");
       free(payload_copy);
       if (detached_root_node) NodeDestroy(detached_root_node);
       goto rollback_strdup;
@@ -150,7 +150,7 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
       continue;
     }
     if (!NodeInsert(node, next_node)) {
-      LOG(ERR, "Failed to insert node");
+      LOG(ERR, "failed to insert node");
       free(payload_copy);
       NodeDestroy(detached_root_node);
       goto rollback_strdup;
@@ -159,10 +159,16 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
   }
 
   // mburakov: We are at the end of the path.
+  next_node->as_file.topic = strdup(topic);
+  if (!next_node->as_file.topic) {
+    LOG(ERR, "failed to copy topic");
+    NodeDestroy(detached_root_node);
+    goto rollback_strdup;
+  }
   next_node->as_file.data = payload_copy;
   next_node->as_file.size = payload_len;
   if (!NodeInsert(parent_node, detached_root_node)) {
-    LOG(ERR, "Failed to insert detached root node");
+    LOG(ERR, "failed to insert detached root node");
     NodeDestroy(detached_root_node);
     goto rollback_strdup;
   }
@@ -181,8 +187,7 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
       MqttCreate(context->options.host, context->options.port,
                  context->options.keepalive, OnMqttMessage, context);
   cfg->direct_io = 1;
-  // TODO(mburakov): This breaks write call.
-  // cfg->nullpath_ok = 1;
+  cfg->nullpath_ok = 1;
   return context;
 }
 

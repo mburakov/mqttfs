@@ -53,6 +53,7 @@ static void DestroyNode(void* nodep) {
     tdestroy(node->as_dir.subs, &DestroyNode);
   } else {
     free(node->as_file.data);
+    free(node->as_file.topic);
   }
   free(UNCONST(node->name));
   free(node);

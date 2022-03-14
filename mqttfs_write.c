@@ -44,7 +44,8 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
     goto rollback_mtx_lock;
   }
 
-  if (!MqttPublish(context->mqtt, path + 1, buf, size)) {
+  struct Node* node = (struct Node*)fi->fh;
+  if (!MqttPublish(context->mqtt, node->as_file.topic, buf, size)) {
     LOG(ERR, "failed to publish topic");
     result = -EIO;
     goto rollback_mtx_lock;
@@ -52,7 +53,6 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
 
   // mburakov: Write shall return a number of bytes.
   memcpy(data, buf, size);
-  struct Node* node = (struct Node*)fi->fh;
   free(node->as_file.data);
   node->as_file.data = data;
   node->as_file.size = size;
