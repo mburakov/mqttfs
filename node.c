@@ -80,13 +80,17 @@ struct Node* NodeCreate(const char* name, _Bool is_dir) {
 struct Node* NodeFind(struct Node* node, char* path) {
   for (const char* token = strtok(path, "/"); token;
        token = strtok(NULL, "/")) {
-    if (!node->is_dir) return NULL;
-    const struct Node key = {.name = token};
-    struct Node** pnode = tfind(&key, &node->as_dir.subs, CompareNodes);
-    if (!pnode) return NULL;
-    node = *pnode;
+    node = NodeGet(node, token);
+    if (!node) return NULL;
   }
   return node;
+}
+
+struct Node* NodeGet(struct Node* node, const char* name) {
+  if (!node->is_dir) return NULL;
+  const struct Node key = {.name = name};
+  struct Node** pnode = tfind(&key, &node->as_dir.subs, CompareNodes);
+  return pnode ? *pnode : NULL;
 }
 
 _Bool NodeInsert(struct Node* parent, const struct Node* node) {
@@ -101,7 +105,7 @@ void NodeForEach(const struct Node* node, NodeCallback callback, void* user) {
     void* user;
   } context = {callback, user};
   g_twalk_closure = &context;
-  twalk(node, NodeCallbackTrampoline);
+  twalk(node->as_dir.subs, NodeCallbackTrampoline);
 }
 
 void NodeDestroy(struct Node* node) { DestroyNode(node); }

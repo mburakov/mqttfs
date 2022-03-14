@@ -67,19 +67,108 @@ static struct Options ParseOptions() {
 static void OnMqttMessage(void* user, const char* topic, const void* payload,
                           size_t payload_len) {
   struct Context* context = user;
-  if (!mtx_lock(&context->root_mutex)) {
+  if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
     return;
   }
 
-  // TODO(mburakov): Create a copy of a filesystem and work on the copy. When
-  // all the modifications succeeded, copy it over the old one, and release the
-  // latter.
+  char* path_copy = strdup(topic);
+  if (!path_copy) {
+    LOG(ERR, "failed to copy path: %s", strerror(errno));
+    goto rollback_mtx_lock;
+  }
 
-  (void)topic;
-  (void)payload;
-  (void)payload_len;
+  void* payload_copy = malloc(payload_len);
+  if (!payload_copy) {
+    LOG(ERR, "failed to copy payload: %s", strerror(errno));
+    goto rollback_strdup;
+  }
 
+  memcpy(payload_copy, payload, payload_len);
+  char* token = strtok(path_copy, "/");
+  if (!token) {
+    LOG(WARNING, "Invalid topic provided");
+    free(payload_copy);
+    goto rollback_strdup;
+  }
+
+  struct Node* node = context->root_node;
+  struct Node* next_node = NULL;
+  for (; token; token = strtok(NULL, "/")) {
+    next_node = NodeGet(node, token);
+    if (!next_node) break;
+    node = next_node;
+  }
+
+  if (!token) {
+    // mburakov: We are at the end of path, node points to the exact item.
+    if (node->is_dir) {
+      LOG(WARNING, "Ignoring write to a directory node");
+      free(payload_copy);
+      goto rollback_strdup;
+    }
+    free(node->as_file.data);
+    node->as_file.data = payload_copy;
+    node->as_file.size = payload_len;
+    if (!node->as_file.ph) goto rollback_strdup;
+
+    // mburakov: There's a blocked poll call on this entry.
+    node->as_file.was_updated = 1;
+    int result = fuse_notify_poll(node->as_file.ph);
+    fuse_pollhandle_destroy(node->as_file.ph);
+    node->as_file.ph = NULL;
+    if (result) {
+      // mburakov: Entry is preserved with its data, but poll will not wake.
+      LOG(ERR, "failed to wake poll: %s", strerror(result));
+    }
+    goto rollback_strdup;
+  }
+
+  // mburakov: Got to the last available node, but it's not the end of the path.
+  if (!node->is_dir) {
+    LOG(WARNING, "Ignoring descend into a non-directory node");
+    free(payload_copy);
+    goto rollback_strdup;
+  }
+
+  // mburakov: The next created node would be a detached root node.
+  struct Node* parent_node = node;
+  struct Node* detached_root_node = NULL;
+  while (token) {
+    const char* name = token;
+    token = strtok(NULL, "/");
+    next_node = NodeCreate(name, token != NULL);
+    if (!next_node) {
+      LOG(ERR, "Failed to create node");
+      free(payload_copy);
+      if (detached_root_node) NodeDestroy(detached_root_node);
+      goto rollback_strdup;
+    }
+    if (!detached_root_node) {
+      detached_root_node = next_node;
+      node = next_node;
+      continue;
+    }
+    if (!NodeInsert(node, next_node)) {
+      LOG(ERR, "Failed to insert node");
+      free(payload_copy);
+      NodeDestroy(detached_root_node);
+      goto rollback_strdup;
+    }
+    node = next_node;
+  }
+
+  // mburakov: We are at the end of the path.
+  next_node->as_file.data = payload_copy;
+  next_node->as_file.size = payload_len;
+  if (!NodeInsert(parent_node, detached_root_node)) {
+    LOG(ERR, "Failed to insert detached root node");
+    NodeDestroy(detached_root_node);
+    goto rollback_strdup;
+  }
+
+rollback_strdup:
+  free(path_copy);
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
 }
@@ -91,6 +180,7 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
   context->mqtt =
       MqttCreate(context->options.host, context->options.port,
                  context->options.keepalive, OnMqttMessage, context);
+  cfg->direct_io = 1;
   cfg->nullpath_ok = 1;
   return context;
 }
@@ -117,6 +207,7 @@ int main(int argc, char* argv[]) {
       .poll = MqttfsPoll,
   };
   int result = fuse_main(argc, argv, &kFuseOperations, &context);
+  if (context.mqtt) MqttDestroy(context.mqtt);
   mtx_destroy(&context.root_mutex);
   NodeDestroy(context.root_node);
   return result;

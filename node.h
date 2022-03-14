@@ -42,6 +42,7 @@ typedef void (*NodeCallback)(void* user, const struct Node* node);
 
 struct Node* NodeCreate(const char* name, _Bool is_dir);
 struct Node* NodeFind(struct Node* node, char* path);
+struct Node* NodeGet(struct Node* node, const char* name);
 _Bool NodeInsert(struct Node* parent, const struct Node* node);
 void NodeForEach(const struct Node* node, NodeCallback callback, void* user);
 void NodeDestroy(struct Node* node);

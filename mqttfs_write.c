@@ -30,7 +30,7 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
   (void)offset;
 
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->root_mutex)) {
+  if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
     return -EIO;
   }

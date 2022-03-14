@@ -29,7 +29,7 @@ int MqttfsCreate(const char* path, mode_t mode, struct fuse_file_info* fi) {
   (void)mode;
 
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->root_mutex)) {
+  if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock root mutex");
     return -EIO;
   }

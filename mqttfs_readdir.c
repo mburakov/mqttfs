@@ -43,7 +43,7 @@ int MqttfsReaddir(const char* path, void* buf, fuse_fill_dir_t filler,
   (void)flags;
 
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->root_mutex)) {
+  if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
     return -EIO;
   }
@@ -55,7 +55,7 @@ int MqttfsReaddir(const char* path, void* buf, fuse_fill_dir_t filler,
     void* buf;
     fuse_fill_dir_t filler;
   } user = {buf, filler};
-  NodeForEach(node->as_dir.subs, OnReaddir, &user);
+  NodeForEach(node, OnReaddir, &user);
 
   mtx_unlock(&context->root_mutex);
   return 0;

@@ -28,7 +28,7 @@ int MqttfsMkdir(const char* path, mode_t mode) {
   (void)mode;
 
   struct Context* context = fuse_get_context()->private_data;
-  if (mtx_lock(&context->root_mutex)) {
+  if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
     return -EIO;
   }
