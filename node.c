@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "log.h"
 
@@ -60,9 +61,16 @@ static void DestroyNode(void* nodep) {
 }
 
 struct Node* NodeCreate(const char* name, _Bool is_dir) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+    LOG(ERR, "failed to get clock: %s", strerror(errno));
+    return NULL;
+  }
   struct Node temp = {
       .name = strdup(name),
       .is_dir = is_dir,
+      .atime = now,
+      .mtime = now,
   };
   if (!temp.name) {
     LOG(ERR, "failed to strdup name: %s", strerror(errno));

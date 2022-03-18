@@ -19,12 +19,15 @@
 #define MQTTFS_NODE_H_
 
 #include <stddef.h>
+#include <time.h>
 
 struct fuse_pollhandle;
 
 struct Node {
   const char* const name;
   const _Bool is_dir;
+  struct timespec atime;
+  struct timespec mtime;
   union {
     struct {
       void* subs;

@@ -32,8 +32,11 @@ int MqttfsGetattr(const char* path, struct stat* stbuf,
   if (fi) {
     node = (const struct Node*)fi->fh;
     if (node->is_dir) {
+      memset(stbuf, 0, sizeof(struct stat));
       stbuf->st_mode = S_IFDIR | 0755;
       stbuf->st_nlink = 2;
+      stbuf->st_atim = node->atime;
+      stbuf->st_mtim = node->mtime;
       return 0;
     }
   }
@@ -70,6 +73,8 @@ int MqttfsGetattr(const char* path, struct stat* stbuf,
     stbuf->st_nlink = 1;
     stbuf->st_size = (off_t)node->as_file.size;
   }
+  stbuf->st_atim = node->atime;
+  stbuf->st_mtim = node->mtime;
   result = 0;
 
 rollback_mtx_lock:
