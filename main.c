@@ -197,13 +197,19 @@ int main(int argc, char* argv[]) {
       .options = ParseOptions(),
       .root_node = NodeCreate("/", 1),
   };
+  if (!context.root_node) {
+    LOG(ERR, "failed to create a root node");
+    exit(errno);
+  }
   if (mtx_init(&context.root_mutex, mtx_plain) != thrd_success) {
     LOG(ERR, "failed to initialize mutex: %s", strerror(errno));
+    NodeDestroy(context.root_node);
     exit(errno);
   }
   static const struct fuse_operations kFuseOperations = {
       .getattr = MqttfsGetattr,
       .mkdir = MqttfsMkdir,
+      .unlink = MqttfsUnlink,
       .open = MqttfsOpen,
       .read = MqttfsRead,
       .write = MqttfsWrite,

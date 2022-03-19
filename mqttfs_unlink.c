@@ -16,7 +16,8 @@
  */
 
 #include <errno.h>
-#include <poll.h>
+#include <fuse.h>
+#include <stdlib.h>
 #include <string.h>
 #include <threads.h>
 
@@ -24,35 +25,47 @@
 #include "mqttfs.h"
 #include "node.h"
 
-// TODO(mburakov): I have no clue what goes on here, it's probably all wrong.
-
-int MqttfsPoll(const char* path, struct fuse_file_info* fi,
-               struct fuse_pollhandle* ph, unsigned* reventsp) {
-  (void)path;
-
+int MqttfsUnlink(const char* path) {
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
-    LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
+    LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
     return -EIO;
   }
 
-  struct Node* node = (struct Node*)fi->fh;
-  if (ph) {
-    // mburakov: Replace currently preserved ph with the new one. This
-    // reproduces the behavior from the official poll sample.
-    if (node->as_file.ph) {
-      fuse_pollhandle_destroy(node->as_file.ph);
-    }
-    node->as_file.ph = ph;
+  int result;
+  char* path_copy = strdup(path);
+  if (!path_copy) {
+    LOG(ERR, "failed to copy path: %s", strerror(errno));
+    result = -EIO;
+    goto rollback_mtx_lock;
   }
 
-  // mburakov: This assumes entries are always writable.
-  *reventsp |= POLLOUT;
-  if (node->as_file.was_updated) {
-    *reventsp |= POLLIN;
-    node->as_file.was_updated = 0;
+  // mburakov: FUSE is expected to provide a valid normalized path here.
+  char* filename = strrchr(path_copy, '/');
+  *filename++ = 0;
+
+  struct Node* parent = NodeFind(context->root_node, path_copy);
+  if (!parent) {
+    result = -ENOENT;
+    goto rollback_strdup;
+  }
+  if (!parent->is_dir) {
+    result = -ENOTDIR;
+    goto rollback_strdup;
   }
 
+  struct Node* node = NodeGet(parent, filename);
+  if (!node) {
+    result = -ENOENT;
+    goto rollback_strdup;
+  }
+  NodeRemove(parent, node);
+  NodeDestroy(node);
+  result = 0;
+
+rollback_strdup:
+  free(path_copy);
+rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
-  return 0;
+  return result;
 }

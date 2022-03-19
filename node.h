@@ -50,6 +50,7 @@ struct Node* NodeGet(struct Node* node, const char* name);
 _Bool NodeTouch(struct Node* node, _Bool atime, _Bool mtime);
 _Bool NodeInsert(struct Node* parent, const struct Node* node);
 void NodeForEach(struct Node* node, NodeCallback callback, void* user);
+void NodeRemove(struct Node* parent, const struct Node* node);
 void NodeDestroy(struct Node* node);
 
 #endif  // MQTTFS_NODE_H_

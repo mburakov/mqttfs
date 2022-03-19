@@ -125,4 +125,9 @@ void NodeForEach(struct Node* node, NodeCallback callback, void* user) {
   NodeTouch(node, 1, 0);
 }
 
+void NodeRemove(struct Node* parent, const struct Node* node) {
+  tdelete(node, &parent->as_dir.subs, CompareNodes);
+  NodeTouch(parent, 0, 1);
+}
+
 void NodeDestroy(struct Node* node) { DestroyNode(node); }
