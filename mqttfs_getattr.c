@@ -28,19 +28,6 @@
 
 int MqttfsGetattr(const char* path, struct stat* stbuf,
                   struct fuse_file_info* fi) {
-  const struct Node* node = NULL;
-  if (fi) {
-    node = (const struct Node*)fi->fh;
-    if (node->is_dir) {
-      memset(stbuf, 0, sizeof(struct stat));
-      stbuf->st_mode = S_IFDIR | 0755;
-      stbuf->st_nlink = 2;
-      stbuf->st_atim = node->atime;
-      stbuf->st_mtim = node->mtime;
-      return 0;
-    }
-  }
-
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
@@ -48,7 +35,10 @@ int MqttfsGetattr(const char* path, struct stat* stbuf,
   }
 
   int result;
-  if (!node) {
+  const struct Node* node;
+  if (fi) {
+    node = (const struct Node*)fi->fh;
+  } else {
     char* path_copy = strdup(path);
     if (!path_copy) {
       LOG(ERR, "failed to copy path: %s", strerror(errno));
