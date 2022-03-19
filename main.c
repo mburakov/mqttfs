@@ -210,6 +210,7 @@ int main(int argc, char* argv[]) {
       .readdir = MqttfsReaddir,
       .init = MqttfsInit,
       .create = MqttfsCreate,
+      .utimens = MqttfsUtimens,
       .poll = MqttfsPoll,
   };
   int result = fuse_main(argc, argv, &kFuseOperations, &context);
