@@ -18,10 +18,10 @@ I don't care about any other platforms except Linux, so you are on your own.
 ## Running
 
 Run it as any other FUSE filesystem binary providing a mountpoint. Optionally
-provide host and port of your MQTT broker on the commandline. Without any
-arguments it will try to connect to localhost on the standard port 1883:
+provide host and port of your MQTT broker as environment variables. Without any
+configuration it will try to connect to localhost on the standard port 1883:
 ```
-./mqttfs --host=localhost --port=1883 /mount/point
+MQTT_HOST=127.0.0.1 MQTT_PORT=1883 ./mqttfs /mount/point
 ```
 
 ## Usage
@@ -29,7 +29,7 @@ arguments it will try to connect to localhost on the standard port 1883:
 Anything that you can imagine. I.e. try this, in the first terminal:
 ```
 mkdir /tmp/mqttfs
-./mqttfs --host=pi /tmp/mqttfs
+MQTT_HOST=192.168.8.3 ./mqttfs /tmp/mqttfs
 cd /tmp/mqttfs
 python -m http.server 8000
 ```
