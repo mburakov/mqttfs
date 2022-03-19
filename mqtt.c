@@ -26,6 +26,7 @@
 #include "log.h"
 
 struct Mqtt {
+  int holdback;
   MqttMessageCallback callback;
   void* user;
   struct mosquitto* mosq;
@@ -41,7 +42,8 @@ static void MqttMessageCallbackTrampoline(
 }
 
 struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
-                        MqttMessageCallback callback, void* user) {
+                        int holdback, MqttMessageCallback callback,
+                        void* user) {
   int runtime_version = mosquitto_lib_version(NULL, NULL, NULL);
   LOG(INFO, "using libmosquitto version %d (built against version %d)",
       runtime_version, LIBMOSQUITTO_VERSION_NUMBER);
@@ -56,6 +58,7 @@ struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
     LOG(ERR, "failed to allocate mosquitto context: %s", strerror(errno));
     goto rollback_mosquitto_lib_init;
   }
+  result->holdback = holdback;
   result->callback = callback;
   result->user = user;
   result->mosq = mosquitto_new(NULL, 1, result);
@@ -119,6 +122,12 @@ _Bool MqttPublish(struct Mqtt* mqtt, const char* topic, const void* payload,
     return 0;
   }
   return 1;
+}
+
+void MqttCancel(struct Mqtt* mqtt, const char* topic) {
+  // TODO(mburakov): Implement me!
+  (void)mqtt;
+  (void)topic;
 }
 
 void MqttDestroy(struct Mqtt* mqtt) {

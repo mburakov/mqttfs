@@ -22,6 +22,7 @@
 #include <threads.h>
 
 #include "log.h"
+#include "mqtt.h"
 #include "mqttfs.h"
 #include "node.h"
 
@@ -59,6 +60,11 @@ int MqttfsUnlink(const char* path) {
     result = -ENOENT;
     goto rollback_strdup;
   }
+  if (node->is_dir) {
+    result = -EISDIR;
+    goto rollback_strdup;
+  }
+  MqttCancel(context->mqtt, node->as_file.topic);
   NodeRemove(parent, node);
   NodeDestroy(node);
   result = 0;

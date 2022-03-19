@@ -186,7 +186,7 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
   struct Context* context = fuse_get_context()->private_data;
   context->mqtt =
       MqttCreate(context->options.host, context->options.port,
-                 context->options.keepalive, OnMqttMessage, context);
+                 context->options.keepalive, 0, OnMqttMessage, context);
   cfg->direct_io = 1;
   cfg->nullpath_ok = 1;
   return context;

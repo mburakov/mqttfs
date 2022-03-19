@@ -25,9 +25,10 @@ typedef void (*MqttMessageCallback)(void* user, const char* topic,
                                     const void* payload, size_t payload_len);
 
 struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
-                        MqttMessageCallback callback, void* user);
+                        int holdback, MqttMessageCallback callback, void* user);
 _Bool MqttPublish(struct Mqtt* mqtt, const char* topic, const void* payload,
                   size_t payload_len);
+void MqttCancel(struct Mqtt* mqtt, const char* topic);
 void MqttDestroy(struct Mqtt* mqtt);
 
 #endif  // MQTTFS_MQTT_H_
