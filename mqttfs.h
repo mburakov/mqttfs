@@ -43,6 +43,7 @@ int MqttfsGetattr(const char* path, struct stat* stbuf,
                   struct fuse_file_info* fi);
 int MqttfsMkdir(const char* path, mode_t mode);
 int MqttfsUnlink(const char* path);
+int MqttfsRename(const char* from, const char* to, unsigned int flags);
 int MqttfsOpen(const char* path, struct fuse_file_info* fi);
 int MqttfsRead(const char* path, char* buf, size_t size, off_t offset,
                struct fuse_file_info* fi);

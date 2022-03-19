@@ -192,6 +192,15 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
   return context;
 }
 
+static int MqttfsChmod(const char* path, mode_t mode,
+                       struct fuse_file_info* fi) {
+  // mburakov: This operation is unsupported, but required by NGINX.
+  (void)path;
+  (void)mode;
+  (void)fi;
+  return 0;
+}
+
 int main(int argc, char* argv[]) {
   struct Context context = {
       .options = ParseOptions(),
@@ -210,6 +219,8 @@ int main(int argc, char* argv[]) {
       .getattr = MqttfsGetattr,
       .mkdir = MqttfsMkdir,
       .unlink = MqttfsUnlink,
+      .rename = MqttfsRename,
+      .chmod = MqttfsChmod,
       .open = MqttfsOpen,
       .read = MqttfsRead,
       .write = MqttfsWrite,

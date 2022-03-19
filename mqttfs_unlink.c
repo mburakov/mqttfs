@@ -63,6 +63,12 @@ int MqttfsUnlink(const char* path) {
   if (node->is_dir) {
     result = -EISDIR;
     goto rollback_strdup;
+  } else if (node->as_file.ph) {
+    // TODO(mburakov): It's unclear how is this supposed to work, so just
+    // prohibit this instead.
+    LOG(ERR, "will not unlink polled file");
+    result = -EPERM;
+    goto rollback_strdup;
   }
   MqttCancel(context->mqtt, node->as_file.topic);
   NodeRemove(parent, node);
