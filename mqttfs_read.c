@@ -37,9 +37,10 @@ int MqttfsRead(const char* path, char* buf, size_t size, off_t offset,
   }
 
   // mburakov: Read shall return a number of bytes.
-  const struct Node* node = (const struct Node*)fi->fh;
+  struct Node* node = (struct Node*)fi->fh;
   size = MIN(size, node->as_file.size);
   memcpy(buf, node->as_file.data, size);
+  NodeTouch(node, 1, 0);
 
   mtx_unlock(&context->root_mutex);
   return (int)size;

@@ -110,6 +110,7 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
     free(node->as_file.data);
     node->as_file.data = payload_copy;
     node->as_file.size = payload_len;
+    NodeTouch(node, 0, 1);
     if (!node->as_file.ph) goto rollback_strdup;
 
     // mburakov: There's a blocked poll call on this entry.

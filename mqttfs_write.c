@@ -56,6 +56,7 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
   free(node->as_file.data);
   node->as_file.data = data;
   node->as_file.size = size;
+  NodeTouch(node, 0, 1);
   result = (int)size;
 
 rollback_mtx_lock:

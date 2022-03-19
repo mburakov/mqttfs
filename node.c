@@ -61,16 +61,9 @@ static void DestroyNode(void* nodep) {
 }
 
 struct Node* NodeCreate(const char* name, _Bool is_dir) {
-  struct timespec now;
-  if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
-    LOG(ERR, "failed to get clock: %s", strerror(errno));
-    return NULL;
-  }
   struct Node temp = {
       .name = strdup(name),
       .is_dir = is_dir,
-      .atime = now,
-      .mtime = now,
   };
   if (!temp.name) {
     LOG(ERR, "failed to strdup name: %s", strerror(errno));
@@ -83,6 +76,7 @@ struct Node* NodeCreate(const char* name, _Bool is_dir) {
     return NULL;
   }
   memcpy(node, &temp, sizeof(struct Node));
+  NodeTouch(node, 1, 1);
   return node;
 }
 
@@ -102,19 +96,33 @@ struct Node* NodeGet(struct Node* node, const char* name) {
   return pnode ? *pnode : NULL;
 }
 
+_Bool NodeTouch(struct Node* node, _Bool atime, _Bool mtime) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+    LOG(ERR, "failed to get clock: %s", strerror(errno));
+    return 0;
+  }
+  if (atime) node->atime = now;
+  if (mtime) node->mtime = now;
+  return 1;
+}
+
 _Bool NodeInsert(struct Node* parent, const struct Node* node) {
   const struct Node* const* pnode =
       tsearch(node, &parent->as_dir.subs, CompareNodes);
-  return pnode && *pnode == node;
+  if (!pnode || *pnode != node) return 0;
+  NodeTouch(parent, 0, 1);
+  return 1;
 }
 
-void NodeForEach(const struct Node* node, NodeCallback callback, void* user) {
+void NodeForEach(struct Node* node, NodeCallback callback, void* user) {
   struct {
     NodeCallback callback;
     void* user;
   } context = {callback, user};
   g_twalk_closure = &context;
   twalk(node->as_dir.subs, NodeCallbackTrampoline);
+  NodeTouch(node, 1, 0);
 }
 
 void NodeDestroy(struct Node* node) { DestroyNode(node); }

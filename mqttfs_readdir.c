@@ -48,7 +48,7 @@ int MqttfsReaddir(const char* path, void* buf, fuse_fill_dir_t filler,
     return -EIO;
   }
 
-  const struct Node* node = (const struct Node*)fi->fh;
+  struct Node* node = (struct Node*)fi->fh;
   filler(buf, ".", NULL, 0, (enum fuse_fill_dir_flags)0);
   filler(buf, "..", NULL, 0, (enum fuse_fill_dir_flags)0);
   struct {
