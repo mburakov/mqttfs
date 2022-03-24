@@ -3,8 +3,7 @@ src:=$(shell ls *.c)
 obj:=$(src:.c=.o)
 
 libs?=\
-	fuse3 \
-	libmosquitto
+	fuse3
 
 CFLAGS?=\
 	-march=native -O3 -flto \

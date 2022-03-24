@@ -6,7 +6,7 @@ broker sends an update via MQTT subscription.
 
 ## Building on Linux
 
-mqttfs depends on fuse3 and libmosquitto. Once you have these installed, just
+mqttfs depends only on fuse3. Once you have it installed, just
 ```
 make
 ```
