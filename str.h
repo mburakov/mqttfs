@@ -26,14 +26,6 @@
 #define UNCONST(op) ((void*)(uintptr_t)(op))
 #endif  // UNCONST
 
-#define StrView(op) \
-  _Generic((op), \
-    const struct Str* : StrViewFromStr, \
-    const char* : StrViewFromPointer, \
-    struct Str* : StrViewFromStr, \
-    char* : StrViewFromPointer) \
-    (op)
-
 struct Str {
   uint8_t short_size;
   uint16_t long_size;
@@ -58,18 +50,10 @@ inline int StrCompare(const struct Str* a, const struct Str* b) {
   return memcmp(data_a, data_b, size_a);
 }
 
-inline struct Str StrViewFromStr(const struct Str* str) {
+inline struct Str StrView(const char* data, uint16_t size) {
   struct Str result = {
-      .long_size = StrSize(str),
-      .data = StrData(str),
-  };
-  return result;
-}
-
-inline struct Str StrViewFromPointer(const char* str) {
-  struct Str result = {
-      .long_size = (uint16_t)strlen(str),
-      .data = str,
+      .long_size = size,
+      .data = data,
   };
   return result;
 }

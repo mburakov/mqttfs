@@ -81,7 +81,7 @@ static int RenameExchange(struct Context* context, struct Node* from_node,
 
 static int RenameNoreplace(struct Context* context, struct Node* from_parent,
                            struct Node** from_node, struct Node* to_parent,
-                           struct Node** to_node, const char* topic,
+                           struct Node** to_node, const struct Str* topic,
                            const char* to_filename) {
   if (*to_node) return -EEXIST;
 
@@ -99,8 +99,7 @@ static int RenameNoreplace(struct Context* context, struct Node* from_parent,
   }
 
   if (!node->is_dir) {
-    struct Str topic_view = StrView(topic);
-    if (!StrCopy(&node->as_file.topic, &topic_view)) {
+    if (!StrCopy(&node->as_file.topic, topic)) {
       LOG(ERR, "failed to copy topic");
       goto rollback_node_create;
     }
@@ -131,7 +130,7 @@ rollback_node_create:
 
 static int RenameNormal(struct Context* context, struct Node* from_parent,
                         struct Node** from_node, struct Node* to_parent,
-                        struct Node** to_node, const char* topic,
+                        struct Node** to_node, const struct Str* topic,
                         const char* to_filename) {
   if (!*to_node) {
     return RenameNoreplace(context, from_parent, from_node, to_parent, to_node,
@@ -152,6 +151,12 @@ static int RenameNormal(struct Context* context, struct Node* from_parent,
 }
 
 int MqttfsRename(const char* from, const char* to, unsigned int flags) {
+  size_t to_size = strlen(to);
+  if (to_size > UINT16_MAX) {
+    LOG(ERR, "path is too long");
+    return -E2BIG;
+  }
+
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
@@ -200,17 +205,18 @@ int MqttfsRename(const char* from, const char* to, unsigned int flags) {
   }
 
   struct Node* to_node = NodeGet(to_parent, to_filename);
+  struct Str topic = StrView(to + 1, (uint16_t)to_size);
   switch (flags) {
     case 0:
       result = RenameNormal(context, from_parent, &from_node, to_parent,
-                            &to_node, to + 1, to_filename);
+                            &to_node, &topic, to_filename);
       break;
     case RENAME_EXCHANGE:
       result = RenameExchange(context, from_node, to_node);
       break;
     case RENAME_NOREPLACE:
       result = RenameNoreplace(context, from_parent, &from_node, to_parent,
-                               &to_node, to + 1, to_filename);
+                               &to_node, &topic, to_filename);
       break;
     default:
       // mburakov: This should not be reacheable.

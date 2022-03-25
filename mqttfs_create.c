@@ -28,6 +28,12 @@
 int MqttfsCreate(const char* path, mode_t mode, struct fuse_file_info* fi) {
   (void)mode;
 
+  size_t path_size = strlen(path + 1);
+  if (path_size > UINT16_MAX) {
+    LOG(ERR, "path is too long");
+    return -E2BIG;
+  }
+
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock root mutex");
@@ -62,7 +68,7 @@ int MqttfsCreate(const char* path, mode_t mode, struct fuse_file_info* fi) {
     result = -EIO;
     goto rollback_strdup;
   }
-  struct Str topic_view = StrView(path + 1);
+  struct Str topic_view = StrView(path + 1, (uint16_t)path_size);
   if (!StrCopy(&node->as_file.topic, &topic_view)) {
     LOG(ERR, "failed to create topic");
     NodeDestroy(node);

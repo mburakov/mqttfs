@@ -67,9 +67,7 @@ enum MqttParseStatus MqttParseMessage(const void** buffer, size_t* size,
 
   *buffer = buffer_copy + remaining_length;
   *size = size_copy - remaining_length;
-  topic_view->short_size = 0;
-  topic_view->long_size = topic_len;
-  topic_view->data = (const char*)buffer_copy + sizeof(uint16_t);
+  *topic_view = StrView((const char*)buffer_copy + sizeof(uint16_t), topic_len);
   *payload = buffer_copy + sizeof(uint16_t) + topic_len;
   *payload_len = remaining_length - sizeof(uint16_t) - topic_len;
   return kMqttParseStatusSuccess;
