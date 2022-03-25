@@ -45,7 +45,7 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
   }
 
   struct Node* node = (struct Node*)fi->fh;
-  if (!MqttPublish(context->mqtt, node->as_file.topic, buf, size)) {
+  if (!MqttPublish(context->mqtt, &node->as_file.topic, buf, size)) {
     LOG(ERR, "failed to publish topic");
     result = -EIO;
     goto rollback_mtx_lock;

@@ -20,6 +20,8 @@
 #include <setjmp.h>
 #include <stdint.h>
 
+#include "str.h"
+
 static uint8_t ReadByte(const uint8_t** buffer, size_t* size, jmp_buf jmpbuf) {
   if (!*size) longjmp(jmpbuf, kMqttParseStatusReadMore);
   uint8_t result = **buffer;
@@ -40,7 +42,7 @@ static size_t ReadRemainingLength(const uint8_t** buffer, size_t* size,
 }
 
 enum MqttParseStatus MqttParseMessage(const void** buffer, size_t* size,
-                                      const char** topic, size_t* topic_len,
+                                      struct Str* topic_view,
                                       const void** payload,
                                       size_t* payload_len) {
   jmp_buf jmpbuf;
@@ -60,14 +62,15 @@ enum MqttParseStatus MqttParseMessage(const void** buffer, size_t* size,
     return kMqttParseStatusSkipped;
   }
 
-  size_t topic_len_copy = (buffer_copy[0] << 8 | buffer_copy[1]) & 0xffff;
-  if (topic_len_copy > remaining_length) return kMqttParseStatusError;
+  uint16_t topic_len = (buffer_copy[0] << 8 | buffer_copy[1]) & 0xffff;
+  if (topic_len > remaining_length) return kMqttParseStatusError;
 
   *buffer = buffer_copy + remaining_length;
   *size = size_copy - remaining_length;
-  *topic = (const char*)buffer_copy + sizeof(uint16_t);
-  *topic_len = topic_len_copy;
-  *payload = *topic + topic_len_copy;
-  *payload_len = remaining_length - sizeof(uint16_t) - *topic_len;
+  topic_view->short_size = 0;
+  topic_view->long_size = topic_len;
+  topic_view->data = (const char*)buffer_copy + sizeof(uint16_t);
+  *payload = buffer_copy + sizeof(uint16_t) + topic_len;
+  *payload_len = remaining_length - sizeof(uint16_t) - topic_len;
   return kMqttParseStatusSuccess;
 }

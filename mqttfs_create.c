@@ -62,8 +62,8 @@ int MqttfsCreate(const char* path, mode_t mode, struct fuse_file_info* fi) {
     result = -EIO;
     goto rollback_strdup;
   }
-  node->as_file.topic = strdup(path + 1);
-  if (!node->as_file.topic) {
+  struct Str topic_view = StrView(path + 1);
+  if (!StrCopy(&node->as_file.topic, &topic_view)) {
     LOG(ERR, "failed to create topic");
     NodeDestroy(node);
     result = -EIO;

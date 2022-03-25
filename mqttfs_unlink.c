@@ -70,7 +70,7 @@ int MqttfsUnlink(const char* path) {
     result = -EPERM;
     goto rollback_strdup;
   }
-  MqttCancel(context->mqtt, node->as_file.topic);
+  MqttCancel(context->mqtt, &node->as_file.topic);
   NodeRemove(parent, node);
   NodeDestroy(node);
   result = 0;

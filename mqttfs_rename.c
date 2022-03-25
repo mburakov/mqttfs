@@ -62,7 +62,7 @@ static int RenameExchange(struct Context* context, struct Node* from_node,
     return from_node->is_dir ? -ENOTDIR : -EISDIR;
 
   if (!from_node->is_dir &&
-      !MqttPublish(context->mqtt, to_node->as_file.topic,
+      !MqttPublish(context->mqtt, &to_node->as_file.topic,
                    from_node->as_file.data, from_node->as_file.size)) {
     LOG(ERR, "failed to publish topic");
     return -EIO;
@@ -99,8 +99,8 @@ static int RenameNoreplace(struct Context* context, struct Node* from_parent,
   }
 
   if (!node->is_dir) {
-    node->as_file.topic = strdup(topic);
-    if (!node->as_file.topic) {
+    struct Str topic_view = StrView(topic);
+    if (!StrCopy(&node->as_file.topic, &topic_view)) {
       LOG(ERR, "failed to copy topic");
       goto rollback_node_create;
     }

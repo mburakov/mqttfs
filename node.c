@@ -25,8 +25,11 @@
 #include <time.h>
 
 #include "log.h"
+#include "str.h"
 
-#define UNCONST(op) ((void*)(ptrdiff_t)op)
+#ifndef UNCONST
+#define UNCONST(op) ((void*)(uintptr_t)op)
+#endif  // UNCONST
 
 // mburakov: musl does not implement twalk_r.
 static void* g_twalk_closure;
@@ -54,7 +57,7 @@ static void DestroyNode(void* nodep) {
     tdestroy(node->as_dir.subs, &DestroyNode);
   } else {
     free(node->as_file.data);
-    free(node->as_file.topic);
+    StrFree(&node->as_file.topic);
   }
   free(UNCONST(node->name));
   free(node);

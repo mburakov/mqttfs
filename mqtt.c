@@ -32,9 +32,15 @@
 
 #include "log.h"
 #include "mqtt_parser.h"
+#include "str.h"
 
+#ifndef UNCONST
 #define UNCONST(op) ((void*)(ptrdiff_t)(op))
+#endif  // UNCONST
+
+#ifndef LENGTH
 #define LENGTH(op) (sizeof(op) / sizeof *(op))
+#endif  // LENGTH
 
 // TODO(mburakov): Implement more robust sending-receiving.
 
@@ -154,35 +160,22 @@ static size_t EncodeLength(size_t length, uint8_t digits[4]) {
 }
 
 static _Bool SendPublishMessage(int fd, const uint8_t* length_digits,
-                                size_t length_digits_count, uint16_t topic_size,
-                                const char* topic, const void* payload,
+                                size_t length_digits_count,
+                                const struct Str* topic, const void* payload,
                                 size_t payload_size) {
+  uint16_t topic_size = StrSize(topic);
   uint16_t topic_size_le = htons(topic_size);
   struct iovec iov[] = {
       {.iov_base = "\x30", .iov_len = 1},
       {.iov_base = UNCONST(length_digits), .iov_len = length_digits_count},
       {.iov_base = &topic_size_le, .iov_len = sizeof(topic_size_le)},
-      {.iov_base = UNCONST(topic), .iov_len = topic_size},
+      {.iov_base = UNCONST(StrData(topic)), .iov_len = topic_size},
       {.iov_base = UNCONST(payload), .iov_len = payload_size},
   };
   ssize_t write_length = 0;
   for (size_t idx = 0; idx < LENGTH(iov); idx++)
     write_length += iov[idx].iov_len;
   return writev(fd, iov, LENGTH(iov)) == write_length;
-}
-
-static void CallbackWrapper(struct Mqtt* mqtt, const char* topic,
-                            size_t topic_len, const void* payload,
-                            size_t payload_len) {
-  char* topic_copy = malloc(topic_len + 1);
-  if (!topic_copy) {
-    LOG(WARNING, "failed to copy topic: %s", strerror(errno));
-    return;
-  }
-  memcpy(topic_copy, topic, topic_len);
-  topic_copy[topic_len] = 0;
-  mqtt->callback(mqtt->user, topic_copy, payload, payload_len);
-  free(topic_copy);
 }
 
 static int ReceiveThread(void* user) {
@@ -246,15 +239,13 @@ static int ReceiveThread(void* user) {
     const void* tail = buffer;
     size_t tail_size = buffer_size;
     for (;;) {
-      const char* topic;
-      size_t topic_len;
+      struct Str topic_view;
       const void* payload;
       size_t payload_len;
-
-      switch (MqttParseMessage(&tail, &tail_size, &topic, &topic_len, &payload,
+      switch (MqttParseMessage(&tail, &tail_size, &topic_view, &payload,
                                &payload_len)) {
         case kMqttParseStatusSuccess:
-          CallbackWrapper(mqtt, topic, topic_len, payload, payload_len);
+          mqtt->callback(mqtt->user, &topic_view, payload, payload_len);
           __attribute__((__fallthrough__));
         case kMqttParseStatusSkipped:
           continue;
@@ -340,29 +331,24 @@ rollback_malloc:
   return NULL;
 }
 
-_Bool MqttPublish(struct Mqtt* mqtt, const char* topic, const void* payload,
-                  size_t payload_len) {
-  size_t topic_size = strlen(topic);
-  if (topic_size > UINT16_MAX) {
-    LOG(ERR, "invalid topic size");
-    return 0;
-  }
+_Bool MqttPublish(struct Mqtt* mqtt, const struct Str* topic,
+                  const void* payload, size_t payload_len) {
   uint8_t length_digits[4];
   size_t length_digits_count = EncodeLength(
-      sizeof(topic_size) + topic_size + payload_len, length_digits);
+      sizeof(topic->long_size) + topic->long_size + payload_len, length_digits);
   if (!length_digits_count) {
     LOG(ERR, "invalid payload size");
     return 0;
   }
-  if (!SendPublishMessage(mqtt->fd, length_digits, length_digits_count,
-                          (uint16_t)topic_size, topic, payload, payload_len)) {
+  if (!SendPublishMessage(mqtt->fd, length_digits, length_digits_count, topic,
+                          payload, payload_len)) {
     LOG(ERR, "failed to write complete publish message: %s", strerror(errno));
     return 0;
   }
   return 1;
 }
 
-void MqttCancel(struct Mqtt* mqtt, const char* topic) {
+void MqttCancel(struct Mqtt* mqtt, const struct Str* topic) {
   // TODO(mburakov): Implement me!
   (void)mqtt;
   (void)topic;

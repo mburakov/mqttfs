@@ -20,6 +20,8 @@
 
 #include <stddef.h>
 
+struct Str;
+
 enum MqttParseStatus {
   kMqttParseStatusSuccess = 0,
   kMqttParseStatusSkipped,
@@ -28,7 +30,7 @@ enum MqttParseStatus {
 };
 
 enum MqttParseStatus MqttParseMessage(const void** buffer, size_t* size,
-                                      const char** topic, size_t* topic_len,
+                                      struct Str* topic_view,
                                       const void** payload,
                                       size_t* payload_len);
 

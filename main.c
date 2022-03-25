@@ -28,6 +28,7 @@
 #include "mqtt.h"
 #include "mqttfs.h"
 #include "node.h"
+#include "str.h"
 
 static struct Options ParseOptions() {
   struct Options options = {
@@ -64,19 +65,22 @@ static struct Options ParseOptions() {
   return options;
 }
 
-static void OnMqttMessage(void* user, const char* topic, const void* payload,
-                          size_t payload_len) {
+static void OnMqttMessage(void* user, const struct Str* topic,
+                          const void* payload, size_t payload_len) {
   struct Context* context = user;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
     return;
   }
 
-  char* path_copy = strdup(topic);
+  uint16_t topic_size = StrSize(topic);
+  char* path_copy = malloc(topic_size + 1);
   if (!path_copy) {
     LOG(ERR, "failed to copy path: %s", strerror(errno));
     goto rollback_mtx_lock;
   }
+  memcpy(path_copy, StrData(topic), topic_size);
+  path_copy[topic_size] = 0;
 
   void* payload_copy = malloc(payload_len);
   if (!payload_copy) {
@@ -160,8 +164,7 @@ static void OnMqttMessage(void* user, const char* topic, const void* payload,
   }
 
   // mburakov: We are at the end of the path.
-  next_node->as_file.topic = strdup(topic);
-  if (!next_node->as_file.topic) {
+  if (!StrCopy(&next_node->as_file.topic, topic)) {
     LOG(ERR, "failed to copy topic");
     NodeDestroy(detached_root_node);
     goto rollback_strdup;

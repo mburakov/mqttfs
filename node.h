@@ -21,6 +21,8 @@
 #include <stddef.h>
 #include <time.h>
 
+#include "str.h"
+
 struct fuse_pollhandle;
 
 struct Node {
@@ -33,7 +35,7 @@ struct Node {
       void* subs;
     } as_dir;
     struct {
-      char* topic;
+      struct Str topic;
       void* data;
       size_t size;
       _Bool was_updated;

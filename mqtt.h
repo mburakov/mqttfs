@@ -21,14 +21,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef void (*MqttMessageCallback)(void* user, const char* topic,
+struct Str;
+
+typedef void (*MqttMessageCallback)(void* user, const struct Str* topic,
                                     const void* payload, size_t payload_len);
 
 struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
                         int holdback, MqttMessageCallback callback, void* user);
-_Bool MqttPublish(struct Mqtt* mqtt, const char* topic, const void* payload,
-                  size_t payload_len);
-void MqttCancel(struct Mqtt* mqtt, const char* topic);
+_Bool MqttPublish(struct Mqtt* mqtt, const struct Str* topic,
+                  const void* payload, size_t payload_len);
+void MqttCancel(struct Mqtt* mqtt, const struct Str* topic);
 void MqttDestroy(struct Mqtt* mqtt);
 
 #endif  // MQTTFS_MQTT_H_
