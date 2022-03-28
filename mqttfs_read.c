@@ -16,8 +16,12 @@
  */
 
 #include <errno.h>
+#include <fuse.h>
+#include <stddef.h>
 #include <string.h>
+#include <sys/types.h>
 #include <threads.h>
+#include <time.h>
 
 #include "log.h"
 #include "mqttfs.h"
@@ -30,6 +34,11 @@ int MqttfsRead(const char* path, char* buf, size_t size, off_t offset,
   (void)path;
 
   if (offset) return 0;
+  struct timespec now;
+  if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+    LOG(ERR, "failed to get clock: %s", strerror(errno));
+    return -EIO;
+  }
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
@@ -38,10 +47,9 @@ int MqttfsRead(const char* path, char* buf, size_t size, off_t offset,
 
   // mburakov: Read shall return a number of bytes.
   struct Node* node = (struct Node*)fi->fh;
-  size = MIN(size, node->as_file.size);
-  memcpy(buf, node->as_file.data, size);
-  NodeTouch(node, 1, 0);
-
+  size = MIN(size, node->size);
+  memcpy(buf, node->data, size);
+  node->atime = now;
   mtx_unlock(&context->root_mutex);
   return (int)size;
 }

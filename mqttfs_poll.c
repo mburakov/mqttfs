@@ -16,6 +16,7 @@
  */
 
 #include <errno.h>
+#include <fuse.h>
 #include <poll.h>
 #include <string.h>
 #include <threads.h>
@@ -40,17 +41,17 @@ int MqttfsPoll(const char* path, struct fuse_file_info* fi,
   if (ph) {
     // mburakov: Replace currently preserved ph with the new one. This
     // reproduces the behavior from the official poll sample.
-    if (node->as_file.ph) {
-      fuse_pollhandle_destroy(node->as_file.ph);
+    if (node->ph) {
+      fuse_pollhandle_destroy(node->ph);
     }
-    node->as_file.ph = ph;
+    node->ph = ph;
   }
 
   // mburakov: This assumes entries are always writable.
   *reventsp |= POLLOUT;
-  if (node->as_file.was_updated) {
+  if (node->was_updated) {
     *reventsp |= POLLIN;
-    node->as_file.was_updated = 0;
+    node->was_updated = 0;
   }
 
   mtx_unlock(&context->root_mutex);

@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <fuse.h>
+#include <search.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
@@ -25,6 +26,7 @@
 #include "log.h"
 #include "mqttfs.h"
 #include "node.h"
+#include "str.h"
 
 int MqttfsUtimens(const char* path, const struct timespec tv[2],
                   struct fuse_file_info* fi) {
@@ -39,22 +41,18 @@ int MqttfsUtimens(const char* path, const struct timespec tv[2],
   if (fi) {
     node = (struct Node*)fi->fh;
   } else {
-    char* path_copy = strdup(path);
-    if (!path_copy) {
-      LOG(ERR, "failed to copy path: %s", strerror(errno));
-      result = -EIO;
-      goto rollback_mtx_lock;
-    }
-
-    node = NodeFind(context->root_node, path_copy);
-    free(path_copy);
-    if (!node) {
+    struct Str path_view = StrView(path + 1);
+    struct Node** nodep = tfind(&path_view, &context->root_node, NodeCompare);
+    if (!nodep) {
       result = -ENOENT;
       goto rollback_mtx_lock;
     }
+    node = *nodep;
   }
-
-  struct timespec now = {.tv_sec = 0, .tv_nsec = 0};
+  struct timespec now = {
+      .tv_sec = 0,
+      .tv_nsec = 0,
+  };
   if ((tv[0].tv_nsec == UTIME_NOW || tv[1].tv_nsec == UTIME_NOW) &&
       clock_gettime(CLOCK_REALTIME, &now) == -1) {
     LOG(ERR, "failed to get clock: %s", strerror(errno));
@@ -68,7 +66,8 @@ int MqttfsUtimens(const char* path, const struct timespec tv[2],
   if (tv[1].tv_nsec != UTIME_OMIT) {
     node->mtime = tv[1].tv_nsec == UTIME_NOW ? now : tv[1];
   }
-  result = 0;
+  mtx_unlock(&context->root_mutex);
+  return 0;
 
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);

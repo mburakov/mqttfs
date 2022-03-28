@@ -18,67 +18,18 @@
 #ifndef MQTTFS_STR_H_
 #define MQTTFS_STR_H_
 
-#include <stdint.h>
-#include <stdlib.h>
-#include <string.h>
-
-#ifndef UNCONST
-#define UNCONST(op) ((void*)(uintptr_t)(op))
-#endif  // UNCONST
+#include <stddef.h>
 
 struct Str {
-  uint8_t short_size;
-  uint16_t long_size;
+  size_t size;
   const char* data;
 };
 
-inline uint16_t StrSize(const struct Str* str) {
-  return str->short_size ? str->short_size : str->long_size;
-}
-
-inline const char* StrData(const struct Str* str) {
-  return str->short_size ? (const char*)&str->long_size : str->data;
-}
-
-inline int StrCompare(const struct Str* a, const struct Str* b) {
-  uint16_t size_a = StrSize(a);
-  uint16_t size_b = StrSize(b);
-  int delta = size_a - size_b;
-  if (delta) return delta;
-  const char* data_a = StrData(a);
-  const char* data_b = StrData(b);
-  return memcmp(data_a, data_b, size_a);
-}
-
-inline struct Str StrView(const char* data, uint16_t size) {
-  struct Str result = {
-      .long_size = size,
-      .data = data,
-  };
-  return result;
-}
-
-inline _Bool StrCopy(struct Str* to, const struct Str* from) {
-  uint16_t size = StrSize(from);
-  const char* data = StrData(from);
-  if (size <= sizeof(struct Str) - offsetof(struct Str, long_size)) {
-    to->short_size = (uint8_t)size;
-    memcpy(&to->long_size, data, size);
-    return 1;
-  }
-  struct Str result = {
-      .long_size = size,
-      .data = malloc(size),
-  };
-  if (!result.data) return 0;
-  memcpy(UNCONST(result.data), data, size);
-  *to = result;
-  return 1;
-}
-
-inline void StrFree(const struct Str* op) {
-  if (op->short_size) return;
-  free(UNCONST(op->data));
-}
+struct Str StrView(const char* str);
+_Bool StrCopy(struct Str* to, const struct Str* from);
+int StrCompare(const struct Str* a, const struct Str* b);
+struct Str StrBasePath(const struct Str* path);
+const char* StrFileName(const struct Str* path);
+void StrFree(const struct Str* op);
 
 #endif  // MQTTFS_STR_H_

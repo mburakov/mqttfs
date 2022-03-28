@@ -16,9 +16,12 @@
  */
 
 #include <errno.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <threads.h>
+#include <time.h>
 
 #include "log.h"
 #include "mqtt.h"
@@ -30,6 +33,11 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
   (void)path;
   (void)offset;
 
+  struct timespec now;
+  if (clock_gettime(CLOCK_REALTIME, &now) == -1) {
+    LOG(ERR, "failed to get clock: %s", strerror(errno));
+    return -EIO;
+  }
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock root mutex: %s", strerror(errno));
@@ -39,26 +47,29 @@ int MqttfsWrite(const char* path, const char* buf, size_t size, off_t offset,
   int result;
   void* data = malloc(size);
   if (!data) {
-    LOG(ERR, "failed to preserve file contents");
+    LOG(ERR, "failed to allocate file contents");
     result = -EIO;
     goto rollback_mtx_lock;
   }
 
   struct Node* node = (struct Node*)fi->fh;
-  if (!MqttPublish(context->mqtt, &node->as_file.topic, buf, size)) {
+  if (!MqttPublish(context->mqtt, &node->path, buf, size)) {
     LOG(ERR, "failed to publish topic");
     result = -EIO;
-    goto rollback_mtx_lock;
+    goto rollback_malloc;
   }
 
   // mburakov: Write shall return a number of bytes.
   memcpy(data, buf, size);
-  free(node->as_file.data);
-  node->as_file.data = data;
-  node->as_file.size = size;
-  NodeTouch(node, 0, 1);
-  result = (int)size;
+  free(node->data);
+  node->mtime = now;
+  node->data = data;
+  node->size = size;
+  mtx_unlock(&context->root_mutex);
+  return (int)size;
 
+rollback_malloc:
+  free(data);
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
   return result;

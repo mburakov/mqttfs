@@ -17,8 +17,8 @@
 
 #include <errno.h>
 #include <fuse.h>
+#include <search.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <threads.h>
 
@@ -26,9 +26,7 @@
 #include "mqtt.h"
 #include "mqttfs.h"
 #include "node.h"
-
-// TODO(mburakov): It's absolutely unclear how this supposed to works with i.e.
-// poll function. Pretty much possible everything here is totally wrong.
+#include "str.h"
 
 #ifndef RENAME_NOREPLACE
 // mburakov: musl does not define this.
@@ -40,123 +38,110 @@
 #define RENAME_EXCHANGE (1 << 1)
 #endif  // RENAME_EXCHANGE
 
-#define MAKE_SWAP_FUNCTION(name, type) \
-  static void name(type* a, type* b) { \
-    type temp = *a;                    \
-    *a = *b;                           \
-    *b = temp;                         \
-  }
-
-#define SWAP(a, b) \
-  _Generic((a), void* : SwapPointers, size_t : SwapSizes)(&a, &b)
-
-MAKE_SWAP_FUNCTION(SwapPointers, void*)
-MAKE_SWAP_FUNCTION(SwapSizes, size_t)
-
-static int RenameExchange(struct Context* context, struct Node* from_node,
-                          struct Node* to_node) {
-  if (!to_node) return -ENOENT;
-
+static int RenameExchange(struct Context* context, struct Node** from_nodep,
+                          void** to_nodep) {
   // mburakov: Check below reproduces behavior described in man 2 rename.
+  struct Node* from_node = *from_nodep;
+  struct Node* to_node = *to_nodep;
   if (from_node->is_dir != to_node->is_dir)
     return from_node->is_dir ? -ENOTDIR : -EISDIR;
 
-  if (!from_node->is_dir &&
-      !MqttPublish(context->mqtt, &to_node->as_file.topic,
-                   from_node->as_file.data, from_node->as_file.size)) {
-    LOG(ERR, "failed to publish topic");
-    return -EIO;
-  }
-
-  if (from_node->is_dir) {
-    SWAP(from_node->as_dir.subs, to_node->as_dir.subs);
-  } else {
-    // mburakov: Update flags, poll handle and other attributes stay
-    // unmodified. It's only file contents that are swapped.
-    SWAP(from_node->as_file.data, to_node->as_file.data);
-    SWAP(from_node->as_file.size, to_node->as_file.size);
-  }
-  return 0;
-}
-
-static int RenameNoreplace(struct Context* context, struct Node* from_parent,
-                           struct Node** from_node, struct Node* to_parent,
-                           struct Node** to_node, const struct Str* topic,
-                           const char* to_filename) {
-  if (*to_node) return -EEXIST;
-
-  if (!(*from_node)->is_dir && (*from_node)->as_file.ph) {
-    // TODO(mburakov): It's unclear how is this supposed to work, so just
-    // prohibit this instead.
-    LOG(ERR, "will not move polled file");
-    return -EPERM;
-  }
-
-  struct Node* node = NodeCreate(to_filename, (*from_node)->is_dir);
-  if (!node) {
-    LOG(ERR, "failed to allocate target node");
-    return -EIO;
-  }
-
-  if (!node->is_dir) {
-    if (!StrCopy(&node->as_file.topic, topic)) {
-      LOG(ERR, "failed to copy topic");
-      goto rollback_node_create;
+  // mburakov: Publish payload with the updated topic.
+  if (!from_node->is_dir) {
+    if (!MqttPublish(context->mqtt, &to_node->path, from_node->data,
+                     from_node->size)) {
+      LOG(ERR, "failed to publish topic");
+      return -EIO;
     }
-  }
-  if (!NodeInsert(to_parent, node)) {
-    LOG(ERR, "failed to insert node");
-    goto rollback_node_create;
+    // mburakov: Delivery might not be done yet, try to cancel.
+    MqttCancel(context->mqtt, &from_node->path);
   }
 
-  if (RenameExchange(context, *from_node, node) != 0) {
-    // mburakov: The only thing that can fail at this point is MQTT publish.
-    // Respective return value would be -EIO.
-    goto rollback_node_insert;
-  }
+  // mburakov: Exchange names first.
+  struct Str temp = from_node->path;
+  from_node->path = to_node->path;
+  to_node->path = temp;
 
-  NodeRemove(from_parent, *from_node);
-  NodeDestroy(*from_node);
-  *from_node = NULL;
-  *to_node = node;
+  // mburakov: Exchange nodes afterwards.
+  *from_nodep = to_node;
+  *to_nodep = from_node;
   return 0;
-
-rollback_node_insert:
-  NodeRemove(to_parent, node);
-rollback_node_create:
-  NodeDestroy(node);
-  return -EIO;
 }
 
-static int RenameNormal(struct Context* context, struct Node* from_parent,
-                        struct Node** from_node, struct Node* to_parent,
-                        struct Node** to_node, const struct Str* topic,
-                        const char* to_filename) {
-  if (!*to_node) {
-    return RenameNoreplace(context, from_parent, from_node, to_parent, to_node,
-                           topic, to_filename);
+static int RenameNoreplace(struct Context* context, struct Node** from_nodep,
+                           void** to_nodep, struct Str* to_view) {
+  if (!to_nodep) {
+    LOG(ERR, "failed to search node: %s", strerror(errno));
+    return -EIO;
   }
-  if (!(*from_node)->is_dir && (*from_node)->as_file.ph) {
-    // TODO(mburakov): It's unclear how is this supposed to work, so just
-    // prohibit this instead.
-    LOG(ERR, "will not move polled file");
-    return -EPERM;
+  if (*to_nodep != to_view) return -EEXIST;
+
+  // TODO(mburakov): Should recursive creation be allowed?
+  // TODO(mburakov): Should parent node type be verified?
+
+  int result;
+  struct Str to_copy;
+  if (!StrCopy(&to_copy, to_view)) {
+    LOG(ERR, "failed to copy string: %s", strerror(errno));
+    result = -EIO;
+    goto rollback_tsearch;
   }
-  int result = RenameExchange(context, *from_node, *to_node);
-  if (result != 0) return result;
-  NodeRemove(from_parent, *from_node);
-  NodeDestroy(*from_node);
-  *from_node = NULL;
+
+  // mburakov: Publish payload with the updated topic.
+  struct Node* from_node = *from_nodep;
+  if (!from_node->is_dir) {
+    if (!MqttPublish(context->mqtt, to_view, from_node->data,
+                     from_node->size)) {
+      LOG(ERR, "failed to publish topic");
+      result = -EIO;
+      goto rollback_str_copy;
+    }
+    // mburakov: Delivery might not be done yet, try to cancel.
+    MqttCancel(context->mqtt, &from_node->path);
+  }
+
+  // mburakov: First, remove the node.
+  tdelete(from_node, &context->root_node, NodeCompare);
+
+  // mburakov: Second, update the node path.
+  StrFree(&from_node->path);
+  from_node->path = to_copy;
+
+  // mburakov: Finally, put the node back.
+  *to_nodep = from_node;
+  return 0;
+
+rollback_str_copy:
+  StrFree(&to_copy);
+rollback_tsearch:
+  tdelete(to_view, &context->root_node, NodeCompare);
+  return result;
+}
+
+static int RenameNormal(struct Context* context, struct Node** from_nodep,
+                        void** to_nodep, struct Str* to_view) {
+  if (!to_nodep) {
+    LOG(ERR, "failed to search node: %s", strerror(errno));
+    return -EIO;
+  }
+
+  if (*to_nodep == to_view)
+    return RenameNoreplace(context, from_nodep, to_nodep, to_view);
+
+  int result = RenameExchange(context, from_nodep, to_nodep);
+  if (result) return result;
+
+  // TODO(mburakov): This cleans up original remains of target node. But what if
+  // it is open or polled? I have no idea how is this supposed to work...
+
+  struct Node* from_node = *from_nodep;
+  tdelete(from_node, &context->root_node, NodeCompare);
+  MqttCancel(context->mqtt, &from_node->path);
+  NodeDestroy(from_node);
   return 0;
 }
 
 int MqttfsRename(const char* from, const char* to, unsigned int flags) {
-  size_t to_size = strlen(to);
-  if (to_size > UINT16_MAX) {
-    LOG(ERR, "path is too long");
-    return -E2BIG;
-  }
-
   struct Context* context = fuse_get_context()->private_data;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
@@ -164,76 +149,37 @@ int MqttfsRename(const char* from, const char* to, unsigned int flags) {
   }
 
   int result;
-  char* from_copy = strdup(from);
-  if (!from_copy) {
-    LOG(ERR, "failed to copy from path: %s", strerror(errno));
-    result = -EIO;
+  struct Str from_view = StrView(from + 1);
+  struct Node** from_nodep =
+      tfind(&from_view, &context->root_node, NodeCompare);
+  if (!from_nodep) {
+    result = -ENOENT;
     goto rollback_mtx_lock;
   }
 
-  // mburakov: FUSE is expected to provide a valid normalized path here.
-  char* from_filename = strrchr(from_copy, '/');
-  *from_filename++ = 0;
-
-  char* to_copy = strdup(to);
-  if (!to_copy) {
-    LOG(ERR, "failed to copy to path: %s", strerror(errno));
-    result = -EIO;
-    goto rollback_strdup_from;
-  }
-
-  // mburakov: FUSE is expected to provide a valid normalized path here.
-  char* to_filename = strrchr(to_copy, '/');
-  *to_filename++ = 0;
-
-  struct Node* from_parent = NodeFind(context->root_node, from_copy);
-  struct Node* to_parent = NodeFind(context->root_node, to_copy);
-  if (!from_parent || !to_parent) {
-    result = -ENOENT;
-    goto rollback_strdup_to;
-  }
-
-  if (!from_parent->is_dir || !to_parent->is_dir) {
-    result = -ENOTDIR;
-    goto rollback_strdup_to;
-  }
-
-  struct Node* from_node = NodeGet(from_parent, from_filename);
-  if (!from_node) {
-    result = -ENOENT;
-    goto rollback_strdup_to;
-  }
-
-  struct Node* to_node = NodeGet(to_parent, to_filename);
-  struct Str topic = StrView(to + 1, (uint16_t)to_size);
+  void** to_nodep;
+  struct Str to_view = StrView(to + 1);
   switch (flags) {
     case 0:
-      result = RenameNormal(context, from_parent, &from_node, to_parent,
-                            &to_node, &topic, to_filename);
+      to_nodep = tsearch(&to_view, &context->root_node, NodeCompare);
+      result = RenameNormal(context, from_nodep, to_nodep, &to_view);
       break;
+
     case RENAME_EXCHANGE:
-      result = RenameExchange(context, from_node, to_node);
+      to_nodep = tfind(&to_view, &context->root_node, NodeCompare);
+      result = RenameExchange(context, from_nodep, to_nodep);
       break;
+
     case RENAME_NOREPLACE:
-      result = RenameNoreplace(context, from_parent, &from_node, to_parent,
-                               &to_node, &topic, to_filename);
+      to_nodep = tsearch(&to_view, &context->root_node, NodeCompare);
+      result = RenameNoreplace(context, from_nodep, to_nodep, &to_view);
       break;
+
     default:
-      // mburakov: This should not be reacheable.
       result = -EINVAL;
-      goto rollback_strdup_to;
-  }
-  if (result == 0) {
-    NodeTouch(to_node, 0, 1);
-    if (from_node) from_node->mtime = to_node->mtime;
-    from_parent->mtime = to_node->mtime;
-    to_parent->mtime = to_node->mtime;
+      break;
   }
 
-rollback_strdup_to:
-  free(to_copy);
-rollback_strdup_from:
-  free(from_copy);
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
   return result;

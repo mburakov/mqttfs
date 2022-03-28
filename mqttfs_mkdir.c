@@ -16,13 +16,17 @@
  */
 
 #include <errno.h>
+#include <fuse.h>
+#include <search.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <threads.h>
 
 #include "log.h"
 #include "mqttfs.h"
 #include "node.h"
+#include "str.h"
 
 int MqttfsMkdir(const char* path, mode_t mode) {
   (void)mode;
@@ -34,42 +38,34 @@ int MqttfsMkdir(const char* path, mode_t mode) {
   }
 
   int result;
-  char* path_copy = strdup(path);
-  if (!path_copy) {
-    LOG(ERR, "failed to copy path: %s", strerror(errno));
+  struct Str path_view = StrView(path + 1);
+  void** nodep = tsearch(&path_view, &context->root_node, NodeCompare);
+  if (!nodep) {
+    LOG(ERR, "failed to search node: %s", strerror(errno));
     result = -EIO;
     goto rollback_mtx_lock;
   }
-
-  // mburakov: FUSE is expected to provide a valid normalized path here.
-  char* filename = strrchr(path_copy, '/');
-  *filename++ = 0;
-
-  struct Node* parent = NodeFind(context->root_node, path_copy);
-  if (!parent) {
-    result = -ENOENT;
-    goto rollback_strdup;
-  }
-  if (!parent->is_dir) {
-    result = -ENOTDIR;
-    goto rollback_strdup;
+  if (*nodep != &path_view) {
+    result = -EEXIST;
+    goto rollback_mtx_lock;
   }
 
-  struct Node* node = NodeCreate(filename, 1);
+  // TODO(mburakov): Should recursive creation be allowed?
+  // TODO(mburakov): Should parent node type be verified?
+
+  struct Node* node = NodeCreate(&path_view, 1);
   if (!node) {
     LOG(ERR, "failed to create node");
     result = -EIO;
-    goto rollback_strdup;
+    goto rollback_tsearch;
   }
-  if (!NodeInsert(parent, node)) {
-    LOG(ERR, "failed to insert node");
-    NodeDestroy(node);
-    result = -EIO;
-  }
-  result = 0;
 
-rollback_strdup:
-  free(path_copy);
+  *nodep = node;
+  mtx_unlock(&context->root_mutex);
+  return 0;
+
+rollback_tsearch:
+  tdelete(&path_view, &context->root_node, NodeCompare);
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
   return result;

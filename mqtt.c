@@ -163,13 +163,12 @@ static _Bool SendPublishMessage(int fd, const uint8_t* length_digits,
                                 size_t length_digits_count,
                                 const struct Str* topic, const void* payload,
                                 size_t payload_size) {
-  uint16_t topic_size = StrSize(topic);
-  uint16_t topic_size_le = htons(topic_size);
+  uint16_t topic_size = htons((uint16_t)topic->size);
   struct iovec iov[] = {
       {.iov_base = "\x30", .iov_len = 1},
       {.iov_base = UNCONST(length_digits), .iov_len = length_digits_count},
-      {.iov_base = &topic_size_le, .iov_len = sizeof(topic_size_le)},
-      {.iov_base = UNCONST(StrData(topic)), .iov_len = topic_size},
+      {.iov_base = &topic_size, .iov_len = sizeof(topic_size)},
+      {.iov_base = UNCONST(topic->data), .iov_len = topic->size},
       {.iov_base = UNCONST(payload), .iov_len = payload_size},
   };
   ssize_t write_length = 0;
@@ -333,9 +332,13 @@ rollback_malloc:
 
 _Bool MqttPublish(struct Mqtt* mqtt, const struct Str* topic,
                   const void* payload, size_t payload_len) {
+  if (topic->size > UINT16_MAX) {
+    LOG(ERR, "invalid topic size");
+    return 0;
+  }
   uint8_t length_digits[4];
-  size_t length_digits_count = EncodeLength(
-      sizeof(topic->long_size) + topic->long_size + payload_len, length_digits);
+  size_t length_digits_count =
+      EncodeLength(sizeof(uint16_t) + topic->size + payload_len, length_digits);
   if (!length_digits_count) {
     LOG(ERR, "invalid payload size");
     return 0;

@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <fuse.h>
+#include <search.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -25,6 +26,7 @@
 #include "log.h"
 #include "mqttfs.h"
 #include "node.h"
+#include "str.h"
 
 int MqttfsGetattr(const char* path, struct stat* stbuf,
                   struct fuse_file_info* fi) {
@@ -35,23 +37,17 @@ int MqttfsGetattr(const char* path, struct stat* stbuf,
   }
 
   int result;
-  const struct Node* node;
+  struct Node* node;
   if (fi) {
-    node = (const struct Node*)fi->fh;
+    node = (struct Node*)fi->fh;
   } else {
-    char* path_copy = strdup(path);
-    if (!path_copy) {
-      LOG(ERR, "failed to copy path: %s", strerror(errno));
-      result = -EIO;
-      goto rollback_mtx_lock;
-    }
-
-    node = NodeFind(context->root_node, path_copy);
-    free(path_copy);
-    if (!node) {
+    struct Str path_view = StrView(path + 1);
+    struct Node** nodep = tfind(&path_view, &context->root_node, NodeCompare);
+    if (!nodep) {
       result = -ENOENT;
       goto rollback_mtx_lock;
     }
+    node = *nodep;
   }
 
   memset(stbuf, 0, sizeof(struct stat));
@@ -61,11 +57,12 @@ int MqttfsGetattr(const char* path, struct stat* stbuf,
   } else {
     stbuf->st_mode = S_IFREG | 0644;
     stbuf->st_nlink = 1;
-    stbuf->st_size = (off_t)node->as_file.size;
+    stbuf->st_size = (off_t)node->size;
   }
   stbuf->st_atim = node->atime;
   stbuf->st_mtim = node->mtime;
-  result = 0;
+  mtx_unlock(&context->root_mutex);
+  return 0;
 
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);

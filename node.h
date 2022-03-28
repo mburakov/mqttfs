@@ -26,33 +26,19 @@
 struct fuse_pollhandle;
 
 struct Node {
-  const char* const name;
-  const _Bool is_dir;
+  struct Str path;
   struct timespec atime;
   struct timespec mtime;
-  union {
-    struct {
-      void* subs;
-    } as_dir;
-    struct {
-      struct Str topic;
-      void* data;
-      size_t size;
-      _Bool was_updated;
-      struct fuse_pollhandle* ph;
-    } as_file;
-  };
+  void* data;
+  size_t size;
+  _Bool is_dir;
+  _Bool was_updated;
+  struct fuse_pollhandle* ph;
 };
 
-typedef void (*NodeCallback)(void* user, const struct Node* node);
-
-struct Node* NodeCreate(const char* name, _Bool is_dir);
-struct Node* NodeFind(struct Node* node, char* path);
-struct Node* NodeGet(struct Node* node, const char* name);
-_Bool NodeTouch(struct Node* node, _Bool atime, _Bool mtime);
-_Bool NodeInsert(struct Node* parent, const struct Node* node);
-void NodeForEach(struct Node* node, NodeCallback callback, void* user);
-void NodeRemove(struct Node* parent, const struct Node* node);
+struct Node* NodeCreate(const struct Str* path, _Bool is_dir);
+_Bool NodeUpdate(struct Node* node, const void* data, size_t size);
+int NodeCompare(const void* a, const void* b);
 void NodeDestroy(struct Node* node);
 
 #endif  // MQTTFS_NODE_H_

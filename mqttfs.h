@@ -22,8 +22,8 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <threads.h>
+#include <time.h>
 
-struct Node;
 struct stat;
 
 struct Options {
@@ -34,7 +34,7 @@ struct Options {
 
 struct Context {
   const struct Options options;
-  struct Node* root_node;
+  void* root_node;
   mtx_t root_mutex;
   struct Mqtt* mqtt;
 };

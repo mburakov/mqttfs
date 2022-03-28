@@ -20,7 +20,11 @@
 
 #include <fuse_log.h>
 
+#define STR_IMPL(op) #op
+#define STR(op) STR_IMPL(op)
+
 #define LOG(level, fmt, ...) \
-  fuse_log(FUSE_LOG_##level, "mqttfs: " fmt "\n", ##__VA_ARGS__)
+  fuse_log(FUSE_LOG_##level, \
+           "mqttfs: " __FILE__ ":" STR(__LINE__) " " fmt "\n", ##__VA_ARGS__)
 
 #endif  // MQTTFS_LOG_H_

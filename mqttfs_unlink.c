@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <fuse.h>
+#include <search.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
@@ -25,6 +26,7 @@
 #include "mqtt.h"
 #include "mqttfs.h"
 #include "node.h"
+#include "str.h"
 
 int MqttfsUnlink(const char* path) {
   struct Context* context = fuse_get_context()->private_data;
@@ -34,49 +36,22 @@ int MqttfsUnlink(const char* path) {
   }
 
   int result;
-  char* path_copy = strdup(path);
-  if (!path_copy) {
-    LOG(ERR, "failed to copy path: %s", strerror(errno));
-    result = -EIO;
+  struct Str path_view = StrView(path + 1);
+  struct Node** nodep = tfind(&path_view, &context->root_node, NodeCompare);
+  if (!nodep) {
+    result = -ENOENT;
     goto rollback_mtx_lock;
   }
 
-  // mburakov: FUSE is expected to provide a valid normalized path here.
-  char* filename = strrchr(path_copy, '/');
-  *filename++ = 0;
+  // TODO(mburakov): Should recursive deletion be allowed?
 
-  struct Node* parent = NodeFind(context->root_node, path_copy);
-  if (!parent) {
-    result = -ENOENT;
-    goto rollback_strdup;
-  }
-  if (!parent->is_dir) {
-    result = -ENOTDIR;
-    goto rollback_strdup;
-  }
-
-  struct Node* node = NodeGet(parent, filename);
-  if (!node) {
-    result = -ENOENT;
-    goto rollback_strdup;
-  }
-  if (node->is_dir) {
-    result = -EISDIR;
-    goto rollback_strdup;
-  } else if (node->as_file.ph) {
-    // TODO(mburakov): It's unclear how is this supposed to work, so just
-    // prohibit this instead.
-    LOG(ERR, "will not unlink polled file");
-    result = -EPERM;
-    goto rollback_strdup;
-  }
-  MqttCancel(context->mqtt, &node->as_file.topic);
-  NodeRemove(parent, node);
+  struct Node* node = *nodep;
+  tdelete(&path_view, &context->root_node, NodeCompare);
+  MqttCancel(context->mqtt, &node->path);
   NodeDestroy(node);
-  result = 0;
+  mtx_unlock(&context->root_mutex);
+  return 0;
 
-rollback_strdup:
-  free(path_copy);
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
   return result;

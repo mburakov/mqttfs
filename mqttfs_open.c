@@ -17,6 +17,8 @@
 
 #include <errno.h>
 #include <fuse.h>
+#include <search.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <threads.h>
@@ -24,6 +26,7 @@
 #include "log.h"
 #include "mqttfs.h"
 #include "node.h"
+#include "str.h"
 
 int MqttfsOpen(const char* path, struct fuse_file_info* fi) {
   struct Context* context = fuse_get_context()->private_data;
@@ -33,27 +36,22 @@ int MqttfsOpen(const char* path, struct fuse_file_info* fi) {
   }
 
   int result;
-  char* path_copy = strdup(path);
-  if (!path_copy) {
-    LOG(ERR, "failed to copy path: %s", strerror(errno));
-    result = -EIO;
+  struct Str path_view = StrView(path + 1);
+  struct Node** nodep = tfind(&path_view, &context->root_node, NodeCompare);
+  if (!nodep) {
+    result = -ENOENT;
+    goto rollback_mtx_lock;
+  }
+  struct Node* node = *nodep;
+  if (node->is_dir) {
+    result = -EISDIR;
     goto rollback_mtx_lock;
   }
 
-  const struct Node* node = NodeFind(context->root_node, path_copy);
-  if (!node) {
-    result = -ENOENT;
-    goto rollback_strdup;
-  }
-  if (node->is_dir) {
-    result = -EISDIR;
-    goto rollback_strdup;
-  }
   fi->fh = (uint64_t)node;
-  result = 0;
+  mtx_unlock(&context->root_mutex);
+  return 0;
 
-rollback_strdup:
-  free(path_copy);
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
   return result;

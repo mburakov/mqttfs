@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fuse.h>
 #include <netinet/in.h>
+#include <search.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,120 +66,117 @@ static struct Options ParseOptions() {
   return options;
 }
 
+static void* CreateRootNode() {
+  struct Str path = StrView("");
+  struct Node* node = NodeCreate(&path, 1);
+  if (!node) {
+    LOG(ERR, "failed to create root node");
+    return NULL;
+  }
+
+  void* root_node = NULL;
+  if (!tsearch(node, &root_node, NodeCompare)) {
+    LOG(ERR, "failed to search root node: %s", strerror(errno));
+    goto rollback_node_create;
+  }
+  return root_node;
+
+rollback_node_create:
+  NodeDestroy(node);
+  return NULL;
+}
+
 static void OnMqttMessage(void* user, const struct Str* topic,
                           const void* payload, size_t payload_len) {
+  // TODO(mburakov): Check that topic is in canonical form.
+
   struct Context* context = user;
   if (mtx_lock(&context->root_mutex) != thrd_success) {
     LOG(ERR, "failed to lock nodes mutex: %s", strerror(errno));
     return;
   }
 
-  uint16_t topic_size = StrSize(topic);
-  char* path_copy = malloc(topic_size + 1);
-  if (!path_copy) {
-    LOG(ERR, "failed to copy path: %s", strerror(errno));
+  // mburakov: Either search, or create a node.
+  void** nodep = tsearch(topic, &context->root_node, NodeCompare);
+  if (!nodep) {
+    LOG(ERR, "failed to search node: %s", strerror(errno));
     goto rollback_mtx_lock;
   }
-  memcpy(path_copy, StrData(topic), topic_size);
-  path_copy[topic_size] = 0;
 
-  void* payload_copy = malloc(payload_len);
-  if (!payload_copy) {
-    LOG(ERR, "failed to copy payload: %s", strerror(errno));
-    goto rollback_strdup;
-  }
-
-  memcpy(payload_copy, payload, payload_len);
-  char* token = strtok(path_copy, "/");
-  if (!token) {
-    LOG(WARNING, "invalid topic provided");
-    free(payload_copy);
-    goto rollback_strdup;
-  }
-
-  struct Node* node = context->root_node;
-  struct Node* next_node = NULL;
-  for (; token; token = strtok(NULL, "/")) {
-    next_node = NodeGet(node, token);
-    if (!next_node) break;
-    node = next_node;
-  }
-
-  if (!token) {
-    // mburakov: We are at the end of path, node points to the exact item.
+  if (*nodep != topic) {
+    // mburakov: Node exists, just update it.
+    struct Node* node = *nodep;
     if (node->is_dir) {
-      LOG(WARNING, "ignoring write to a directory node");
-      free(payload_copy);
-      goto rollback_strdup;
+      LOG(ERR, "node is a directory");
+      goto rollback_mtx_lock;
     }
-    free(node->as_file.data);
-    node->as_file.data = payload_copy;
-    node->as_file.size = payload_len;
-    NodeTouch(node, 0, 1);
-    if (!node->as_file.ph) goto rollback_strdup;
-
-    // mburakov: There's a blocked poll call on this entry.
-    node->as_file.was_updated = 1;
-    int result = fuse_notify_poll(node->as_file.ph);
-    fuse_pollhandle_destroy(node->as_file.ph);
-    node->as_file.ph = NULL;
-    if (result) {
-      // mburakov: Entry is preserved with its data, but poll will not wake.
-      LOG(WARNING, "failed to wake poll: %s", strerror(result));
+    if (!NodeUpdate(node, payload, payload_len)) {
+      LOG(ERR, "failed to update node");
+      goto rollback_mtx_lock;
     }
-    goto rollback_strdup;
+    mtx_unlock(&context->root_mutex);
+    return;
   }
 
-  // mburakov: Got to the last available node, but it's not the end of the path.
-  if (!node->is_dir) {
-    LOG(WARNING, "ignoring descend into a non-directory node");
-    free(payload_copy);
-    goto rollback_strdup;
+  // mburakov: Node does not exist, and has to be created and updated.
+  struct Node* node = NodeCreate(topic, 0);
+  if (!node) {
+    LOG(ERR, "failed to create node");
+    goto rollback_tsearch;
+  }
+  if (!NodeUpdate(node, payload, payload_len)) {
+    LOG(ERR, "failed to update node");
+    goto rollback_node_create;
+  }
+  *nodep = node;
+
+  // mburakov: Some parent directory nodes might also be missing.
+  struct Str base_path = StrBasePath(topic);
+  for (; base_path.size; base_path = StrBasePath(&base_path)) {
+    nodep = tsearch(&base_path, &context->root_node, NodeCompare);
+    if (!nodep) {
+      LOG(ERR, "failed to search parent node: %s", strerror(errno));
+      goto rollback_recurse;
+    }
+
+    if (*nodep != &base_path) {
+      // mburakov: Reached first existing parent node.
+      struct Node* parent = *nodep;
+      if (!parent->is_dir) {
+        LOG(ERR, "parent node is not a directory");
+        goto rollback_recurse;
+      }
+      // mburakov: The first existing parent node is a directory. Reaching it
+      // means that the full base path is available now.
+      break;
+    }
+
+    // mburakov: Parent node does not exist, and has to be created.
+    struct Node* parent = NodeCreate(&base_path, 1);
+    if (!parent) {
+      LOG(ERR, "failed to create parent node");
+      tdelete(&base_path, &context->root_node, NodeCompare);
+      goto rollback_recurse;
+    }
+    *nodep = parent;
   }
 
-  // mburakov: The next created node would be a detached root node.
-  struct Node* parent_node = node;
-  struct Node* detached_root_node = NULL;
-  while (token) {
-    const char* name = token;
-    token = strtok(NULL, "/");
-    next_node = NodeCreate(name, token != NULL);
-    if (!next_node) {
-      LOG(ERR, "failed to create node");
-      free(payload_copy);
-      if (detached_root_node) NodeDestroy(detached_root_node);
-      goto rollback_strdup;
-    }
-    if (!detached_root_node) {
-      detached_root_node = next_node;
-      node = next_node;
-      continue;
-    }
-    if (!NodeInsert(node, next_node)) {
-      LOG(ERR, "failed to insert node");
-      free(payload_copy);
-      NodeDestroy(detached_root_node);
-      goto rollback_strdup;
-    }
-    node = next_node;
-  }
+  mtx_unlock(&context->root_mutex);
+  return;
 
-  // mburakov: We are at the end of the path.
-  if (!StrCopy(&next_node->as_file.topic, topic)) {
-    LOG(ERR, "failed to copy topic");
-    NodeDestroy(detached_root_node);
-    goto rollback_strdup;
+rollback_recurse:
+  for (struct Str rollback_path = StrBasePath(topic);
+       rollback_path.size != base_path.size;
+       rollback_path = StrBasePath(&rollback_path)) {
+    nodep = tfind(&rollback_path, &context->root_node, NodeCompare);
+    // mburakov: The node has to be in the tree.
+    NodeDestroy(*nodep);
+    tdelete(&rollback_path, &context->root_node, NodeCompare);
   }
-  next_node->as_file.data = payload_copy;
-  next_node->as_file.size = payload_len;
-  if (!NodeInsert(parent_node, detached_root_node)) {
-    LOG(ERR, "failed to insert detached root node");
-    NodeDestroy(detached_root_node);
-    goto rollback_strdup;
-  }
-
-rollback_strdup:
-  free(path_copy);
+rollback_node_create:
+  NodeDestroy(node);
+rollback_tsearch:
+  tdelete(topic, &context->root_node, 0);
 rollback_mtx_lock:
   mtx_unlock(&context->root_mutex);
 }
@@ -204,24 +202,30 @@ static int MqttfsChmod(const char* path, mode_t mode,
   return 0;
 }
 
+static void NodeDestroyWrapper(void* node) {
+  // mburakov: This is needed to avoid casting function types.
+  NodeDestroy(node);
+}
+
 int main(int argc, char* argv[]) {
   struct Context context = {
       .options = ParseOptions(),
-      .root_node = NodeCreate("/", 1),
+      .root_node = CreateRootNode(),
   };
   if (!context.root_node) {
-    LOG(ERR, "failed to create a root node");
-    exit(errno);
+    LOG(ERR, "failed to create root node");
+    exit(EIO);
   }
   if (mtx_init(&context.root_mutex, mtx_plain) != thrd_success) {
     LOG(ERR, "failed to initialize mutex: %s", strerror(errno));
-    NodeDestroy(context.root_node);
+    tdestroy(context.root_node, NodeDestroyWrapper);
     exit(errno);
   }
   static const struct fuse_operations kFuseOperations = {
       .getattr = MqttfsGetattr,
       .mkdir = MqttfsMkdir,
       .unlink = MqttfsUnlink,
+      .rmdir = MqttfsUnlink,
       .rename = MqttfsRename,
       .chmod = MqttfsChmod,
       .open = MqttfsOpen,
@@ -236,7 +240,7 @@ int main(int argc, char* argv[]) {
   };
   int result = fuse_main(argc, argv, &kFuseOperations, &context);
   if (context.mqtt) MqttDestroy(context.mqtt);
+  tdestroy(context.root_node, NodeDestroyWrapper);
   mtx_destroy(&context.root_mutex);
-  NodeDestroy(context.root_node);
   return result;
 }
