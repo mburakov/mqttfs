@@ -45,6 +45,7 @@
 // TODO(mburakov): Implement more robust sending-receiving.
 
 struct Mqtt {
+  uint16_t keepalive;
   int holdback;
   MqttMessageCallback callback;
   void* user;
@@ -121,13 +122,25 @@ static _Bool ReceiveSubscribeAck(int fd) {
     uint16_t packet_identifier;
     uint8_t return_code;
   } subscribe_ack;
-  _Static_assert(sizeof(subscribe_ack) == 5, "Unexpected subscribe ack length");
+  _Static_assert(sizeof(subscribe_ack) == 5, "Unexpected subscribe ack size");
   return read(fd, &subscribe_ack, sizeof(subscribe_ack)) ==
              sizeof(subscribe_ack) &&
          subscribe_ack.packet_type == 0x90 &&
          subscribe_ack.message_length == 3 &&
          subscribe_ack.packet_identifier == htons(1) &&
          subscribe_ack.return_code == 0;
+}
+
+static _Bool SendPingMessage(int fd) {
+  struct __attribute__((__packed__)) {
+    uint8_t packet_type;
+    uint8_t message_length;
+  } ping_message = {
+      .packet_type = 0xd0,
+      .message_length = 0,
+  };
+  _Static_assert(sizeof(ping_message) == 2, "Unexpected ping message size");
+  return write(fd, &ping_message, sizeof(ping_message)) == sizeof(ping_message);
 }
 
 static _Bool SendDisconnectMessage(int fd) {
@@ -188,11 +201,18 @@ static int ReceiveThread(void* user) {
         {.fd = mqtt->fd, .events = POLLIN},
         {.fd = mqtt->pipe[0], .events = POLLIN},
     };
-    switch (poll(pfds, LENGTH(pfds), -1)) {
+    int timeout = mqtt->keepalive ? mqtt->keepalive * 500 : -1;
+    switch (poll(pfds, LENGTH(pfds), timeout)) {
       case -1:
         if (errno != EINTR) LOG(WARNING, "failed to poll: %s", strerror(errno));
-        __attribute__((__fallthrough__));
+        continue;
       case 0:
+        // TODO(mburakov): This is actually wrong and might intervene with write
+        // operation on the main thread. Pings should be reworked!
+        if (!SendPingMessage(mqtt->fd)) {
+          LOG(WARNING, "failed to send complete ping message: %s",
+              strerror(errno));
+        }
         continue;
       default:
         break;
@@ -271,6 +291,7 @@ struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
     return NULL;
   }
 
+  result->keepalive = keepalive;
   result->holdback = holdback;
   result->callback = callback;
   result->user = user;
