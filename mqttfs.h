@@ -30,6 +30,7 @@ struct Options {
   const char* host;
   uint16_t port;
   uint16_t keepalive;
+  int holdback;
 };
 
 struct Context {

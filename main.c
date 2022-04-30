@@ -36,6 +36,7 @@ static struct Options ParseOptions() {
       .host = "127.0.0.1",
       .port = 1883,
       .keepalive = 60,
+      .holdback = 0,
   };
   const char* maybe_host = getenv("MQTT_HOST");
   if (maybe_host) {
@@ -62,6 +63,15 @@ static struct Options ParseOptions() {
       exit(EINVAL);
     }
     options.keepalive = (uint16_t)keepalive;
+  }
+  const char* maybe_holdback = getenv("MQTT_HOLDBACK");
+  if (maybe_holdback) {
+    int holdback = atoi(maybe_holdback);
+    if (holdback < 0) {
+      LOG(ERR, "invalid holdback value provided");
+      exit(EINVAL);
+    }
+    options.holdback = holdback;
   }
   return options;
 }
@@ -185,9 +195,9 @@ static void* MqttfsInit(struct fuse_conn_info* conn, struct fuse_config* cfg) {
   (void)conn;
   // TODO(mburakov): Implement lazy connecting.
   struct Context* context = fuse_get_context()->private_data;
-  context->mqtt =
-      MqttCreate(context->options.host, context->options.port,
-                 context->options.keepalive, 0, OnMqttMessage, context);
+  context->mqtt = MqttCreate(context->options.host, context->options.port,
+                             context->options.keepalive,
+                             context->options.holdback, OnMqttMessage, context);
   cfg->direct_io = 1;
   cfg->nullpath_ok = 1;
   return context;

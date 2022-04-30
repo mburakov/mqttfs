@@ -21,206 +21,163 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/uio.h>
 #include <threads.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "log.h"
+#include "mqtt_impl.h"
 #include "mqtt_parser.h"
 #include "str.h"
-
-#ifndef UNCONST
-#define UNCONST(op) ((void*)(ptrdiff_t)(op))
-#endif  // UNCONST
 
 #ifndef LENGTH
 #define LENGTH(op) (sizeof(op) / sizeof *(op))
 #endif  // LENGTH
 
-// TODO(mburakov): Implement more robust sending-receiving.
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif  // MIN
+
+struct MqttMessage {
+  int64_t timestamp;
+  struct Str topic;
+  void* payload;
+  size_t payload_len;
+};
 
 struct Mqtt {
   uint16_t keepalive;
   int holdback;
   MqttMessageCallback callback;
   void* user;
+  int64_t last_timestamp;
+  struct MqttMessage* messages;
+  size_t messages_alloc;
+  size_t messages_size;
+  mtx_t messages_mutex;
   int fd;
   int pipe[2];
-  thrd_t receive_thread;
+  atomic_bool running;
+  thrd_t io_thread;
 };
 
-static _Bool SendConnectMessage(int fd, uint16_t keepalive) {
-  struct __attribute__((__packed__)) {
-    uint8_t packet_type;
-    uint8_t message_length;
-    uint16_t protocol_name_length;
-    char protocol_name[4];
-    uint8_t protocol_level;
-    uint8_t connect_flags;
-    uint16_t keepalive;
-    uint16_t client_id_length;
-  } connect_message = {
-      .packet_type = 0x10,
-      .message_length = 12,
-      .protocol_name_length = htons(4),
-      .protocol_name = {'M', 'Q', 'T', 'T'},
-      .protocol_level = 4,
-      .connect_flags = 0x02,
-      .keepalive = htons(keepalive),
-      .client_id_length = 0,
-  };
-  _Static_assert(sizeof(connect_message) == 14,
-                 "Unexpected connect message size");
-  return write(fd, &connect_message, sizeof(connect_message)) ==
-         sizeof(connect_message);
+static int64_t MillisNow() {
+  struct timespec result = {.tv_sec = 0, .tv_nsec = 0};
+  clock_gettime(CLOCK_MONOTONIC, &result);
+  return result.tv_sec * 1000 + result.tv_nsec / 1000000;
 }
 
-static _Bool ReceiveConnectAck(int fd) {
-  struct __attribute__((__packed__)) {
-    uint8_t packet_type;
-    uint8_t message_length;
-    uint8_t connack_flags;
-    uint8_t return_code;
-  } connect_ack;
-  _Static_assert(sizeof(connect_ack) == 4, "Unexpected connect ack size");
-  return read(fd, &connect_ack, sizeof(connect_ack)) == sizeof(connect_ack) &&
-         connect_ack.packet_type == 0x20 && connect_ack.message_length == 2 &&
-         connect_ack.connack_flags == 0x00 && connect_ack.return_code == 0;
-}
-
-static _Bool SendSubscribeMessage(int fd) {
-  struct __attribute__((__packed__)) {
-    uint8_t packet_type;
-    uint8_t message_length;
-    uint16_t packet_identifier;
-    uint16_t topic_length;
-    char topic[3];
-    uint8_t qos;
-  } subscribe_message = {
-      .packet_type = 0x82,
-      .message_length = 8,
-      .packet_identifier = htons(1),
-      .topic_length = htons(3),
-      .topic = {'+', '/', '#'},
-      .qos = 0x00,
-  };
-  _Static_assert(sizeof(subscribe_message) == 10,
-                 "Unexpected subscribe message size");
-  return write(fd, &subscribe_message, sizeof(subscribe_message)) ==
-         sizeof(subscribe_message);
-}
-
-static _Bool ReceiveSubscribeAck(int fd) {
-  struct __attribute__((__packed__)) {
-    uint8_t packet_type;
-    uint8_t message_length;
-    uint16_t packet_identifier;
-    uint8_t return_code;
-  } subscribe_ack;
-  _Static_assert(sizeof(subscribe_ack) == 5, "Unexpected subscribe ack size");
-  return read(fd, &subscribe_ack, sizeof(subscribe_ack)) ==
-             sizeof(subscribe_ack) &&
-         subscribe_ack.packet_type == 0x90 &&
-         subscribe_ack.message_length == 3 &&
-         subscribe_ack.packet_identifier == htons(1) &&
-         subscribe_ack.return_code == 0;
-}
-
-static _Bool SendPingMessage(int fd) {
-  struct __attribute__((__packed__)) {
-    uint8_t packet_type;
-    uint8_t message_length;
-  } ping_message = {
-      .packet_type = 0xd0,
-      .message_length = 0,
-  };
-  _Static_assert(sizeof(ping_message) == 2, "Unexpected ping message size");
-  return write(fd, &ping_message, sizeof(ping_message)) == sizeof(ping_message);
-}
-
-static _Bool SendDisconnectMessage(int fd) {
-  struct __attribute__((__packed__)) {
-    uint8_t packet_type;
-    uint8_t message_length;
-  } disconnect_message = {
-      .packet_type = 0xe0,
-      .message_length = 0,
-  };
-  _Static_assert(sizeof(disconnect_message) == 2,
-                 "Unexpected disconnect message size");
-  return write(fd, &disconnect_message, sizeof(disconnect_message)) ==
-         sizeof(disconnect_message);
-}
-
-static size_t EncodeLength(size_t length, uint8_t digits[4]) {
-  if (length > 268435455) return 0;
-  size_t result = 0;
-  for (;;) {
-    digits[result] = length & 0x7f;
-    length = length >> 7;
-    if (length) {
-      digits[result] |= 0x80;
-      result++;
-    } else {
-      return result + 1;
+static int64_t DrainMessages(struct Mqtt* mqtt, int64_t now) {
+  if (mtx_lock(&mqtt->messages_mutex) != thrd_success) {
+    LOG(ERR, "failed to lock messages mutex: %s", strerror(errno));
+    return -1;
+  }
+  int64_t result = -1;
+  size_t counter = 0;
+  for (; counter < mqtt->messages_size &&
+         mqtt->messages[counter].timestamp <= now;
+       counter++) {
+    if (!SendPublishMessage(mqtt->fd, mqtt->messages[counter].topic.data,
+                            (uint16_t)mqtt->messages[counter].topic.size,
+                            mqtt->messages[counter].payload,
+                            (uint32_t)mqtt->messages[counter].topic.size)) {
+      LOG(ERR, "failed to write complete publish message: %s", strerror(errno));
+      goto rollback_mtx_lock;
     }
   }
+  for (struct MqttMessage* iter = mqtt->messages;
+       iter < mqtt->messages + counter; iter++) {
+    StrFree(&iter->topic);
+    free(iter->payload);
+  }
+  if (counter) {
+    if (counter != mqtt->messages_size) {
+      memmove(mqtt->messages, mqtt->messages + counter,
+              mqtt->messages_size - counter);
+    }
+    mqtt->last_timestamp = now;
+    mqtt->messages_size -= counter;
+  }
+  result = mqtt->messages_size ? mqtt->messages->timestamp : INT64_MAX;
+
+rollback_mtx_lock:
+  mtx_unlock(&mqtt->messages_mutex);
+  return result;
 }
 
-static _Bool SendPublishMessage(int fd, const uint8_t* length_digits,
-                                size_t length_digits_count,
-                                const struct Str* topic, const void* payload,
-                                size_t payload_size) {
-  uint16_t topic_size = htons((uint16_t)topic->size);
-  struct iovec iov[] = {
-      {.iov_base = "\x30", .iov_len = 1},
-      {.iov_base = UNCONST(length_digits), .iov_len = length_digits_count},
-      {.iov_base = &topic_size, .iov_len = sizeof(topic_size)},
-      {.iov_base = UNCONST(topic->data), .iov_len = topic->size},
-      {.iov_base = UNCONST(payload), .iov_len = payload_size},
-  };
-  ssize_t write_length = 0;
-  for (size_t idx = 0; idx < LENGTH(iov); idx++)
-    write_length += iov[idx].iov_len;
-  return writev(fd, iov, LENGTH(iov)) == write_length;
-}
-
-static int ReceiveThread(void* user) {
+static int IoThread(void* user) {
   struct Mqtt* mqtt = user;
   uint8_t* buffer = NULL;
   size_t buffer_alloc = 0;
   size_t buffer_size = 0;
 
-  for (;;) {
+  while (atomic_load(&mqtt->running)) {
+    int64_t now = MillisNow();
+    if (!now) {
+      // mburakov: This could only happen if either a) CLOCK_MONOTONIC does not
+      // exist on this system, or b) clock value does not fit into timespec. In
+      // both cases it does not really make sense to proceed.
+      LOG(CRIT, "failed to get monotonic clock: %s", strerror(errno));
+      goto leave;
+    }
+
+    int64_t next_timestamp = DrainMessages(mqtt, now);
+    if (next_timestamp == -1) {
+      // mburakov: This could only happen if either a) mutex failed to lock, or
+      // b) writing was not fully completed. In both cases it does not really
+      // make sense to proceed.
+      LOG(CRIT, "failed to drain messages");
+      goto leave;
+    }
+
+    static const int64_t kPingThreshold = 100;
+    int64_t next_ping =
+        mqtt->last_timestamp + mqtt->keepalive * 1000 - kPingThreshold;
+    if (next_ping <= now) {
+      if (!SendPingMessage(mqtt->fd)) {
+        // mburakov: Inability to send a ping *will* lead to a server-side
+        // disconnect. It does not really make sense to proceed.
+        LOG(CRIT, "failed to send complete ping message: %s", strerror(errno));
+        goto leave;
+      }
+      mqtt->last_timestamp = now;
+      next_ping = now + mqtt->keepalive * 1000 - kPingThreshold;
+    }
+
+    // mburakov: Delay can not be negative or zero, because at this point some
+    // message was sent to the server. At the same time delay can not be more
+    // than 65535000 (maximum possible keepalive value times 1000), so it will
+    // certainly fit into 32-bit int.
+    int timeout = (int)(MIN(next_ping, next_timestamp) - now);
+
     struct pollfd pfds[] = {
         {.fd = mqtt->fd, .events = POLLIN},
         {.fd = mqtt->pipe[0], .events = POLLIN},
     };
-    int timeout = mqtt->keepalive ? mqtt->keepalive * 500 : -1;
     switch (poll(pfds, LENGTH(pfds), timeout)) {
       case -1:
-        if (errno != EINTR) LOG(WARNING, "failed to poll: %s", strerror(errno));
-        continue;
+        if (errno != EINTR)
+          LOG(WARNING, "failed to complete poll: %s", strerror(errno));
+        __attribute__((__fallthrough__));
       case 0:
-        // TODO(mburakov): This is actually wrong and might intervene with write
-        // operation on the main thread. Pings should be reworked!
-        if (!SendPingMessage(mqtt->fd)) {
-          LOG(WARNING, "failed to send complete ping message: %s",
-              strerror(errno));
-        }
         continue;
       default:
         break;
     }
+
     if (pfds[1].revents & POLLIN) {
-      free(buffer);
-      return 0;
+      char wakeup;
+      if (read(mqtt->pipe[0], &wakeup, sizeof(wakeup)) != sizeof(wakeup))
+        LOG(WARNING, "failed to read wake token: %s", strerror(errno));
+      continue;
     }
+
     if (~pfds[0].revents & POLLIN) continue;
 
     int fionread;
@@ -248,8 +205,8 @@ static int ReceiveThread(void* user) {
         LOG(ERR, "failed to read: %s", strerror(errno));
         __attribute__((__fallthrough__));
       case 0:
-        free(buffer);
-        return 0;
+        LOG(CRIT, "server closed connection");
+        goto leave;
       default:
         buffer_size += (size_t)read_size;
         break;
@@ -272,14 +229,24 @@ static int ReceiveThread(void* user) {
           break;
         case kMqttParseStatusError:
           LOG(ERR, "failed to parse publish message");
-          free(buffer);
-          return 0;
+          goto leave;
       }
       memmove(buffer, tail, tail_size);
       buffer_size = tail_size;
       break;
     }
   }
+
+leave:
+  atomic_store(&mqtt->running, 0);
+  free(buffer);
+  return 0;
+}
+
+static void WakeIoThread(struct Mqtt* mqtt) {
+  char wakeup = 0;
+  if (write(mqtt->pipe[1], &wakeup, sizeof(wakeup)) != sizeof(wakeup))
+    LOG(WARNING, "failed to write wake token: %s", strerror(errno));
 }
 
 struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
@@ -295,10 +262,24 @@ struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
   result->holdback = holdback;
   result->callback = callback;
   result->user = user;
+
+  result->last_timestamp = MillisNow();
+  if (!result->last_timestamp) {
+    LOG(ERR, "failed to get clock: %s", strerror(errno));
+    goto rollback_malloc;
+  }
+  result->messages = NULL;
+  result->messages_alloc = 0;
+  result->messages_size = 0;
+  if (mtx_init(&result->messages_mutex, 1) != thrd_success) {
+    LOG(ERR, "failed to initialize mutex: %s", strerror(errno));
+    goto rollback_malloc;
+  }
+
   result->fd = socket(AF_INET, SOCK_STREAM, 0);
   if (result->fd == -1) {
     LOG(ERR, "failed to create socket: %s", strerror(errno));
-    goto rollback_malloc;
+    goto rollback_mtx_init;
   }
 
   if (pipe(result->pipe) == -1) {
@@ -332,8 +313,8 @@ struct Mqtt* MqttCreate(const char* host, uint16_t port, uint16_t keepalive,
     LOG(ERR, "failed to receive complete subscribe ack: %s", strerror(errno));
     goto rollback_send_connect_message;
   }
-  if (thrd_create(&result->receive_thread, ReceiveThread, result) !=
-      thrd_success) {
+  atomic_store(&result->running, 1);
+  if (thrd_create(&result->io_thread, &IoThread, result) != thrd_success) {
     LOG(ERR, "failed to create receive thread: %s", strerror(errno));
     goto rollback_send_connect_message;
   }
@@ -346,6 +327,8 @@ rollback_pipe:
   close(result->pipe[0]);
 rollback_socket:
   close(result->fd);
+rollback_mtx_init:
+  mtx_destroy(&result->messages_mutex);
 rollback_malloc:
   free(result);
   return NULL;
@@ -357,19 +340,59 @@ _Bool MqttPublish(struct Mqtt* mqtt, const struct Str* topic,
     LOG(ERR, "invalid topic size");
     return 0;
   }
-  uint8_t length_digits[4];
-  size_t length_digits_count =
-      EncodeLength(sizeof(uint16_t) + topic->size + payload_len, length_digits);
-  if (!length_digits_count) {
-    LOG(ERR, "invalid payload size");
+  if (sizeof(uint16_t) + topic->size + payload_len > 268435455) {
+    LOG(ERR, "invalid message length");
     return 0;
   }
-  if (!SendPublishMessage(mqtt->fd, length_digits, length_digits_count, topic,
-                          payload, payload_len)) {
-    LOG(ERR, "failed to write complete publish message: %s", strerror(errno));
+  if (!atomic_load(&mqtt->running)) {
+    LOG(ERR, "io thread is not running");
     return 0;
   }
+  int64_t timestamp = MillisNow();
+  if (!timestamp) {
+    LOG(ERR, "failed to get monotonic clock: %s", strerror(errno));
+    return 0;
+  }
+  if (mtx_lock(&mqtt->messages_mutex) != thrd_success) {
+    LOG(ERR, "failed to lock mutex: %s", strerror(errno));
+    return 0;
+  }
+
+  if (mqtt->messages_size == mqtt->messages_alloc) {
+    size_t messages_alloc = mqtt->messages_alloc + 1;
+    struct MqttMessage* messages =
+        realloc(mqtt->messages, messages_alloc * sizeof(struct MqttMessage));
+    if (!messages) {
+      LOG(ERR, "failed to grow messages list: %s", strerror(errno));
+      goto rollback_mtx_lock;
+    }
+    mqtt->messages = messages;
+    mqtt->messages_alloc = messages_alloc;
+  }
+  struct MqttMessage* message = mqtt->messages + mqtt->messages_size;
+  message->timestamp = timestamp + mqtt->holdback;
+  if (!StrCopy(&message->topic, topic)) {
+    LOG(ERR, "failed to copy topic: %s", strerror(errno));
+    goto rollback_mtx_lock;
+  }
+
+  message->payload = malloc(payload_len);
+  if (!message->payload) {
+    LOG(ERR, "failed to copy payload: %s", strerror(errno));
+    goto rollback_str_copy;
+  }
+  memcpy(message->payload, payload, payload_len);
+  message->payload_len = payload_len;
+  mqtt->messages_size++;
+  mtx_unlock(&mqtt->messages_mutex);
+  WakeIoThread(mqtt);
   return 1;
+
+rollback_str_copy:
+  StrFree(&message->topic);
+rollback_mtx_lock:
+  mtx_unlock(&mqtt->messages_mutex);
+  return 0;
 }
 
 void MqttCancel(struct Mqtt* mqtt, const struct Str* topic) {
@@ -379,13 +402,18 @@ void MqttCancel(struct Mqtt* mqtt, const struct Str* topic) {
 }
 
 void MqttDestroy(struct Mqtt* mqtt) {
-  char wakeup = 0;
-  if (write(mqtt->pipe[1], &wakeup, sizeof(wakeup)) != sizeof(wakeup))
-    LOG(CRIT, "failed to wake receive thread: %s", strerror(errno));
-  thrd_join(mqtt->receive_thread, NULL);
+  atomic_store(&mqtt->running, 0);
+  WakeIoThread(mqtt);
+  thrd_join(mqtt->io_thread, NULL);
   SendDisconnectMessage(mqtt->fd);
   close(mqtt->pipe[1]);
   close(mqtt->pipe[0]);
   close(mqtt->fd);
+  for (struct MqttMessage* iter = mqtt->messages;
+       iter < mqtt->messages + mqtt->messages_size; iter++) {
+    StrFree(&iter->topic);
+    free(iter->payload);
+  }
+  free(mqtt->messages);
   free(mqtt);
 }
