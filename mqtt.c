@@ -83,10 +83,10 @@ static int64_t DrainMessages(struct Mqtt* mqtt, int64_t now) {
   for (; counter < mqtt->messages_size &&
          mqtt->messages[counter].timestamp <= now;
        counter++) {
-    if (!SendPublishMessage(mqtt->fd, mqtt->messages[counter].topic.data,
-                            (uint16_t)mqtt->messages[counter].topic.size,
-                            mqtt->messages[counter].payload,
-                            (uint32_t)mqtt->messages[counter].topic.size)) {
+    const struct MqttMessage* iter = mqtt->messages + counter;
+    if (!SendPublishMessage(mqtt->fd, iter->topic.data,
+                            (uint16_t)iter->topic.size, iter->payload,
+                            (uint32_t)iter->payload_len)) {
       LOG(ERR, "failed to write complete publish message: %s", strerror(errno));
       goto rollback_mtx_lock;
     }
@@ -396,9 +396,27 @@ rollback_mtx_lock:
 }
 
 void MqttCancel(struct Mqtt* mqtt, const struct Str* topic) {
-  // TODO(mburakov): Implement me!
-  (void)mqtt;
-  (void)topic;
+  if (mtx_lock(&mqtt->messages_mutex) != thrd_success) {
+    LOG(ERR, "failed to lock mutex: %s", strerror(errno));
+    // TODO(mburakov): Cancelling is not supposed to fail (thus returns void).
+    // Is it still possible to somehow handle this?
+    return;
+  }
+
+  for (size_t index = 0; index < mqtt->messages_size;) {
+    struct MqttMessage* iter = mqtt->messages + index;
+    if (StrCompare(&iter->topic, topic)) {
+      index++;
+      continue;
+    }
+    StrFree(&iter->topic);
+    free(iter->payload);
+    mqtt->messages_size--;
+    memmove(iter, iter + 1,
+            (mqtt->messages_size - index) * sizeof(struct MqttMessage));
+  }
+
+  mtx_unlock(&mqtt->messages_mutex);
 }
 
 void MqttDestroy(struct Mqtt* mqtt) {
