@@ -15,21 +15,17 @@
  * along with mqttfs.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef MQTTFS_STR_H_
-#define MQTTFS_STR_H_
+#ifndef MQTTFS_UTILS_H_
+#define MQTTFS_UTILS_H_
 
-#include <stddef.h>
+#define STR_IMPL(op) #op
+#define STR(op) STR_IMPL(op)
+#define LOG(fmt, ...) \
+  LogImpl(__FILE__ ":" STR(__LINE__) " " fmt "\n", ##__VA_ARGS__)
+#define LENGTH(op) (sizeof(op) / sizeof *(op))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-struct Str {
-  size_t size;
-  const char* data;
-};
+void LogImpl(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
-struct Str StrView(const char* str);
-_Bool StrCopy(struct Str* to, const struct Str* from);
-int StrCompare(const struct Str* a, const struct Str* b);
-struct Str StrBasePath(const struct Str* path);
-const char* StrFileName(const struct Str* path);
-void StrFree(const struct Str* op);
-
-#endif  // MQTTFS_STR_H_
+#endif  // MQTTFS_UTILS_H_

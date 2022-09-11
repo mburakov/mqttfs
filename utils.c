@@ -15,18 +15,14 @@
  * along with mqttfs.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef MQTT_IMPL_H_
-#define MQTT_IMPL_H_
+#include "utils.h"
 
-#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
 
-_Bool SendConnectMessage(int fd, uint16_t keepalive);
-_Bool ReceiveConnectAck(int fd);
-_Bool SendSubscribeMessage(int fd);
-_Bool ReceiveSubscribeAck(int fd);
-_Bool SendPingMessage(int fd);
-_Bool SendDisconnectMessage(int fd);
-_Bool SendPublishMessage(int fd, const char* topic, uint16_t topic_size,
-                         const void* payload, uint32_t payload_size);
-
-#endif  // MQTT_IMPL_H_
+void LogImpl(const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+}
