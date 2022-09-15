@@ -28,6 +28,7 @@
 #include <sys/mount.h>
 #include <unistd.h>
 
+#include "mqtt.h"
 #include "mqttfs.h"
 #include "utils.h"
 
@@ -70,10 +71,15 @@ static int HandleFuse(int fuse, struct MqttfsNode* root) {
   return 0;
 }
 
-static int HandleMqtt(int mqtt) {
+static void HandlePublish(void* user, const char* topic, size_t topic_size,
+                          const void* payload, size_t payload_size) {
+  struct MqttfsNode* root = user;
+  (void)topic;
+  (void)topic_size;
+  (void)payload;
+  (void)payload_size;
+  (void)root;
   // TODO(mburakov): Implement me!
-  (void)mqtt;
-  return 0;
 }
 
 static int ParseAddress(const char* arg, struct sockaddr_in* addr) {
@@ -131,8 +137,13 @@ int main(int argc, char* argv[]) {
     LOG("Failed to set signal handlers (%s)", strerror(errno));
     goto rollback_mount;
   }
-
   struct MqttfsNode root;
+  struct MqttContext context;
+  if (MqttContextInit(&context, 65535, mqtt, HandlePublish, &root)) {
+    LOG("Failed to init mqtt context");
+    goto rollback_mount;
+  }
+
   while (!g_signal) {
     struct pollfd pfds[] = {
         {.fd = fuse, .events = POLLIN},
@@ -148,7 +159,7 @@ int main(int argc, char* argv[]) {
       LOG("Failed to handle fuse io event");
       goto rollback_root;
     }
-    if (pfds[1].revents && HandleMqtt(mqtt) == -1) {
+    if (pfds[1].revents && context.handler(&context, mqtt) == -1) {
       LOG("Failed to handle mqtt io event");
       goto rollback_root;
     }
@@ -157,6 +168,7 @@ int main(int argc, char* argv[]) {
 
 rollback_root:
   MqttfsNodeCleanup(&root);
+  MqttContextCleanup(&context);
 rollback_mount:
   umount(argv[2]);
 rollback_fuse:
