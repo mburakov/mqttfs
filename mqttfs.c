@@ -30,8 +30,29 @@
 
 #include "utils.h"
 
+static void* g_twalk_closure;
+
 static int CompareNodes(const void* a, const void* b) {
   return strcmp(*(const char* const*)a, *(const char* const*)b);
+}
+
+static struct MqttfsNode* CreateNode(const char* name) {
+  struct MqttfsNode* node = calloc(1, sizeof(struct MqttfsNode));
+  if (!node) {
+    LOG("Failed to allocate node (%s)", strerror(errno));
+    return NULL;
+  }
+
+  node->name = strdup(name);
+  if (!node->name) {
+    LOG("Failed to copy node name (%s)", strerror(errno));
+    goto rollback_node;
+  }
+  return node;
+
+rollback_node:
+  free(node);
+  return NULL;
 }
 
 static void DestroyNode(void* node) {
@@ -40,6 +61,45 @@ static void DestroyNode(void* node) {
   tdestroy(real_node->children, DestroyNode);
   free(real_node->name);
   free(real_node);
+}
+
+static int AppendDirent(struct MqttfsBuffer* buffer, uint64_t node,
+                        uint32_t type, const char* name) {
+  size_t namelen = strlen(name);
+  size_t size =
+      buffer->size + FUSE_DIRENT_ALIGN(sizeof(struct fuse_dirent) + namelen);
+  char* data = realloc(buffer->data, size);
+  if (!data) {
+    LOG("Failed to reallocate buffer (%s)", strerror(errno));
+    return -1;
+  }
+  struct fuse_dirent* dirent = (void*)(data + buffer->size);
+  buffer->data = data;
+  buffer->size = size;
+  dirent->ino = node;
+  dirent->off = size;
+  dirent->namelen = (uint32_t)namelen;
+  dirent->type = type;
+  memcpy(dirent->name, name, namelen);
+  return 0;
+}
+
+static void CollectDirents(const void* nodep, VISIT which, int depth) {
+  (void)depth;
+  struct {
+    struct MqttfsBuffer* buffer;
+    int result;
+  }* twalk_closure = g_twalk_closure;
+
+  if (twalk_closure->result == -1 || which == postorder || which == endorder)
+    return;
+
+  const struct MqttfsNode* node = *(const void* const*)nodep;
+  if (AppendDirent(twalk_closure->buffer, (uint64_t)node,
+                   node->buffer.size ? S_IFREG : S_IFDIR, node->name) == -1) {
+    LOG("Failed to append dirent for %s", node->name);
+    twalk_closure->result = -1;
+  }
 }
 
 static int WriteFuseStatus(int fuse, uint64_t unique, int status) {
@@ -75,54 +135,64 @@ static int WriteFuseReply(int fuse, uint64_t unique, const void* data,
 static struct fuse_attr GetNodeAttr(struct MqttfsNode* node) {
   struct fuse_attr attr = {
       .size = node->buffer.size,
-      .mode = node->buffer.size ? (S_IFREG | 06444) : (S_IFDIR | 0755),
+      .mode = node->buffer.size ? (S_IFREG | 0644) : (S_IFDIR | 0755),
   };
   return attr;
 }
 
-static int AppendDirent(struct MqttfsBuffer* buffer, uint64_t node,
-                        uint32_t type, const char* name) {
-  size_t namelen = strlen(name);
-  size_t size =
-      buffer->size + FUSE_DIRENT_ALIGN(sizeof(struct fuse_dirent) + namelen);
-  char* data = realloc(buffer->data, size);
-  if (!data) {
-    LOG("Failed to reallocate buffer (%s)", strerror(errno));
+static int RecurseStore(struct MqttfsNode* node, const char* topic,
+                        size_t topic_size, const void* payload,
+                        size_t payload_size) {
+  if (!topic_size) {
+    void* payload_copy = malloc(payload_size);
+    if (!payload_copy) {
+      LOG("Failed to copy payload");
+      return -1;
+    }
+    memcpy(payload_copy, payload, payload_size);
+    free(node->buffer.data);
+    node->buffer.data = payload_copy;
+    node->buffer.size = payload_size;
+    return 0;
+  }
+
+  const char* separator = memchr(topic, '/', topic_size);
+  size_t name_size = separator ? (size_t)(separator - topic) : topic_size;
+  char name_buffer[name_size + 1];
+  memcpy(name_buffer, topic, name_size);
+  name_buffer[name_size] = 0;
+
+  const char* name = name_buffer;
+  void** pchild = tsearch(&name, &node->children, CompareNodes);
+  if (!pchild) {
+    LOG("Failed to store child node (%s)", strerror(errno));
     return -1;
   }
-  struct fuse_dirent* dirent = (void*)(data + buffer->size);
-  buffer->data = data;
-  buffer->size = size;
-  dirent->ino = node;
-  dirent->off = size;
-  dirent->namelen = (uint32_t)namelen;
-  dirent->type = type;
-  memcpy(dirent->name, name, namelen);
+  int child_created = *pchild == &name;
+  if (child_created) {
+    struct MqttfsNode* child = CreateNode(name);
+    if (!child) {
+      LOG("Failed to create node");
+      tdelete(&name, &node->children, CompareNodes);
+      return -1;
+    }
+    *pchild = child;
+  }
+
+  const char* next_topic = separator ? topic + name_size + 1 : NULL;
+  size_t next_topic_size = separator ? topic_size - name_size - 1 : 0;
+  if (RecurseStore(*pchild, next_topic, next_topic_size, payload,
+                   payload_size) == -1) {
+    if (child_created) {
+      struct MqttfsNode* child = *pchild;
+      tdelete(&name, &node->children, CompareNodes);
+      free(child->name);
+      free(child);
+    }
+    return -1;
+  }
   return 0;
 }
-
-#if 0
-static struct MqttfsNode* MqttfsNodeCreate(const char* name) {
-  struct MqttfsNode* node = calloc(1, sizeof(struct MqttfsNode));
-  if (!node) {
-    LOG("Failed to allocate node (%s)", strerror(errno));
-    return NULL;
-  }
-
-  if (name) {
-    node->name = strdup(name);
-    if (!node->name) {
-      LOG("Failed to allocate node name (%s)", strerror(errno));
-      goto rollback_node;
-    }
-  }
-  return node;
-
-rollback_node:
-  free(node);
-  return NULL;
-}
-#endif
 
 int MqttfsNodeUnknown(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse) {
@@ -133,7 +203,7 @@ int MqttfsNodeUnknown(struct MqttfsNode* node, uint64_t unique,
 int MqttfsNodeLookup(struct MqttfsNode* node, uint64_t unique, const void* data,
                      int fuse) {
   LOG("[%p]->%s(%s)", (void*)node, __func__, (const char*)data);
-  struct MqttfsNode** pnode = tfind(data, &node->children, CompareNodes);
+  struct MqttfsNode** pnode = tfind(&data, &node->children, CompareNodes);
   if (!pnode) return WriteFuseStatus(fuse, unique, -ENOENT);
   struct fuse_entry_out entry_out = {
       .nodeid = (uint64_t)*pnode,
@@ -183,6 +253,21 @@ int MqttfsNodeOpenDir(struct MqttfsNode* node, uint64_t unique,
     goto rollback_handle;
   }
 
+  struct {
+    struct MqttfsBuffer* buffer;
+    int result;
+  } twalk_closure = {
+      .buffer = buffer,
+      .result = 0,
+  };
+
+  g_twalk_closure = &twalk_closure;
+  twalk(node->children, CollectDirents);
+  if (twalk_closure.result == -1) {
+    LOG("Failed to collect dirents");
+    goto rollback_handle;
+  }
+
   struct fuse_open_out open_out = {
       .fh = (uint64_t)buffer,
       .open_flags = FOPEN_DIRECT_IO,
@@ -227,4 +312,11 @@ int MqttfsNodeReleaseDir(struct MqttfsNode* node, uint64_t unique,
 
 void MqttfsNodeCleanup(struct MqttfsNode* node) {
   tdestroy(node->children, DestroyNode);
+}
+
+void MqttfsStore(void* root_node, const char* topic, size_t topic_size,
+                 const void* payload, size_t payload_size) {
+  LOG("%.*s: %.*s", (int)topic_size, topic, (int)payload_size,
+      (const char*)payload);
+  RecurseStore(root_node, topic, topic_size, payload, payload_size);
 }

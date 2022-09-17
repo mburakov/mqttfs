@@ -71,14 +71,6 @@ static int HandleFuse(int fuse, struct MqttfsNode* root) {
   return 0;
 }
 
-static void HandlePublish(void* user, const char* topic, size_t topic_size,
-                          const void* payload, size_t payload_size) {
-  struct MqttfsNode* root = user;
-  (void)root;
-  LOG("%.*s: %.*s", (int)topic_size, topic, (int)payload_size,
-      (const char*)payload);
-}
-
 static int ParseAddress(const char* arg, struct sockaddr_in* addr) {
   char ip[sizeof("xxx.xxx.xxx.xxx")];
   uint16_t port = 1883;
@@ -136,7 +128,7 @@ int main(int argc, char* argv[]) {
   }
   struct MqttfsNode root;
   struct MqttContext context;
-  if (MqttContextInit(&context, 65535, mqtt, HandlePublish, &root)) {
+  if (MqttContextInit(&context, 65535, mqtt, MqttfsStore, &root)) {
     LOG("Failed to init mqtt context");
     goto rollback_mount;
   }

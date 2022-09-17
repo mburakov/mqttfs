@@ -48,4 +48,7 @@ int MqttfsNodeReleaseDir(struct MqttfsNode* node, uint64_t unique,
                          const void* data, int fuse);
 void MqttfsNodeCleanup(struct MqttfsNode* node);
 
+void MqttfsStore(void* root_node, const char* topic, size_t topic_size,
+                 const void* payload, size_t payload_size);
+
 #endif  // MQTTFS_MQTTFS_H_
