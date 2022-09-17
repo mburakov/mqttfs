@@ -19,6 +19,7 @@
 
 #include <errno.h>
 #include <netinet/in.h>
+#include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -27,6 +28,12 @@
 #include <unistd.h>
 
 #include "utils.h"
+
+enum PublishParseResult {
+  kPublishParseResultSuccess = 0,
+  kPublishParseResultReadMore,
+  kPublishParseResultError,
+};
 
 static void* GetBuffer(struct MqttContext* context, size_t size) {
   size_t buffer_alloc = context->buffer_size + size;
@@ -40,6 +47,56 @@ static void* GetBuffer(struct MqttContext* context, size_t size) {
     context->buffer_alloc = buffer_alloc;
   }
   return ((char*)context->buffer_data) + context->buffer_size;
+}
+
+static uint8_t ReadByte(const struct MqttContext* context, size_t* offset,
+                        jmp_buf jmpbuf) {
+  if (*offset == context->buffer_size)
+    longjmp(jmpbuf, kPublishParseResultReadMore);
+  uint8_t* buffer_data = context->buffer_data;
+  return buffer_data[(*offset)++];
+}
+
+static size_t ReadVarint(const struct MqttContext* context, size_t* offset,
+                         jmp_buf jmpbuf) {
+  size_t result = 0;
+  for (size_t counter = 0; counter < 4; counter++) {
+    uint8_t byte = ReadByte(context, offset, jmpbuf);
+    result |= (byte & 0x7full) << (7ull * counter);
+    if (~byte & 0x80) return result;
+  }
+  LOG("Failed to parse varint");
+  longjmp(jmpbuf, kPublishParseResultError);
+}
+
+static enum PublishParseResult ParsePublish(struct MqttContext* context) {
+  jmp_buf jmpbuf;
+  int result = setjmp(jmpbuf);
+  if (result != 0) {
+    return (enum PublishParseResult)result;
+  }
+
+  size_t offset = 0;
+  uint8_t packet_type = ReadByte(context, &offset, jmpbuf);
+  size_t remaining_length = ReadVarint(context, &offset, jmpbuf);
+  if (remaining_length > context->buffer_size)
+    return kPublishParseResultReadMore;
+
+  if ((packet_type & 0xf0) == 0x30) {
+    const uint8_t* varheader = (uint8_t*)context->buffer_data + offset;
+    uint16_t topic_size = (varheader[0] << 8 | varheader[1]) & 0xffff;
+    const char* topic = (const void*)(varheader + 2);
+    const char* payload = topic + topic_size;
+    size_t payload_size = remaining_length - topic_size - sizeof(topic_size);
+    context->publish_callback(context->publish_user, topic, topic_size, payload,
+                              payload_size);
+  }
+
+  size_t leftovers = context->buffer_size - remaining_length - offset;
+  void* from = (char*)context->buffer_data + remaining_length + offset;
+  memmove(context->buffer_data, from, leftovers);
+  context->buffer_size = leftovers;
+  return kPublishParseResultSuccess;
 }
 
 static int ReadPublish(struct MqttContext* context, int mqtt) {
@@ -65,12 +122,22 @@ static int ReadPublish(struct MqttContext* context, int mqtt) {
       default:
         break;
     }
+    context->buffer_size += (size_t)len;
     break;
   }
 
-  // TODO(mburakov): Do actual parsing here!
-  context->buffer_size = 0;
-  return 0;
+  for (;;) {
+    switch (ParsePublish(context)) {
+      case kPublishParseResultSuccess:
+        continue;
+      case kPublishParseResultReadMore:
+        return 0;
+      case kPublishParseResultError:
+        return -1;
+      default:
+        __builtin_unreachable();
+    }
+  }
 }
 
 static int ReadSubscribeAck(struct MqttContext* context, int mqtt) {

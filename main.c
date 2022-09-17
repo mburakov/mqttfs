@@ -74,12 +74,9 @@ static int HandleFuse(int fuse, struct MqttfsNode* root) {
 static void HandlePublish(void* user, const char* topic, size_t topic_size,
                           const void* payload, size_t payload_size) {
   struct MqttfsNode* root = user;
-  (void)topic;
-  (void)topic_size;
-  (void)payload;
-  (void)payload_size;
   (void)root;
-  // TODO(mburakov): Implement me!
+  LOG("%.*s: %.*s", (int)topic_size, topic, (int)payload_size,
+      (const char*)payload);
 }
 
 static int ParseAddress(const char* arg, struct sockaddr_in* addr) {
