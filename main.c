@@ -131,21 +131,32 @@ int main(int argc, char* argv[]) {
   }
   struct MqttfsNode root;
   struct MqttContext context;
-  if (MqttContextInit(&context, 65535, mqtt, MqttfsStore, &root)) {
+  static const uint16_t kMqttKeepalive = UINT16_MAX;
+  if (MqttContextInit(&context, kMqttKeepalive, mqtt, MqttfsStore, &root)) {
     LOG("Failed to init mqtt context");
     goto rollback_mount;
   }
 
+  uint64_t now = MillisNow();
   while (!g_signal) {
     struct pollfd pfds[] = {
         {.fd = fuse, .events = POLLIN},
         {.fd = mqtt, .events = POLLIN},
     };
-    int result = poll(pfds, LENGTH(pfds), -1);
-    if (result == -1) {
-      if (errno == EINTR) continue;
-      LOG("Failed to poll (%s)", strerror(errno));
-      goto rollback_root;
+    uint64_t timeout = now + kMqttKeepalive * 1000ull - MillisNow();
+    int result = poll(pfds, LENGTH(pfds), (int)timeout);
+    switch (result) {
+      case -1:
+        if (errno == EINTR) continue;
+        LOG("Failed to poll (%s)", strerror(errno));
+        goto rollback_root;
+      case 0:
+        now = MillisNow();
+        if (MqttContextPing(&context, mqtt) != -1) continue;
+        LOG("Failed to ping mqtt broker");
+        goto rollback_root;
+      default:
+        break;
     }
     if (pfds[0].revents && HandleFuse(fuse, &root) == -1) {
       LOG("Failed to handle fuse io event");

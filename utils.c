@@ -19,10 +19,18 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <time.h>
 
 void LogImpl(const char* fmt, ...) {
   va_list args;
   va_start(args, fmt);
   vfprintf(stderr, fmt, args);
   va_end(args);
+}
+
+unsigned long long MillisNow(void) {
+  struct timespec ts = {.tv_sec = 0, .tv_nsec = 0};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (unsigned long long)ts.tv_sec * 1000ull +
+         (unsigned long long)ts.tv_nsec / 1000000ull;
 }

@@ -27,5 +27,6 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 void LogImpl(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+unsigned long long MillisNow(void);
 
 #endif  // MQTTFS_UTILS_H_

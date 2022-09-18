@@ -105,6 +105,10 @@ static int ReadPublish(struct MqttContext* context, int mqtt) {
     LOG("Failed to get available data size (%s)", strerror(errno));
     return -1;
   }
+  if (!avail) {
+    LOG("Broker closed connection");
+    return -1;
+  }
 
   size_t size = (size_t)avail;
   void* buffer = GetBuffer(context, size);
