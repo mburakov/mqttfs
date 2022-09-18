@@ -96,7 +96,7 @@ static void CollectDirents(const void* nodep, VISIT which, int depth) {
 
   const struct MqttfsNode* node = *(const void* const*)nodep;
   if (AppendDirent(twalk_closure->buffer, (uint64_t)node,
-                   node->buffer.size ? S_IFREG : S_IFDIR, node->name) == -1) {
+                   node->children ? S_IFDIR : S_IFREG, node->name) == -1) {
     LOG("Failed to append dirent for %s", node->name);
     twalk_closure->result = -1;
   }
@@ -135,7 +135,7 @@ static int WriteFuseReply(int fuse, uint64_t unique, const void* data,
 static struct fuse_attr GetNodeAttr(struct MqttfsNode* node) {
   struct fuse_attr attr = {
       .size = node->buffer.size,
-      .mode = node->buffer.size ? (S_IFREG | 0644) : (S_IFDIR | 0755),
+      .mode = node->children ? (S_IFDIR | 0755) : (S_IFREG | 0644),
   };
   return attr;
 }
