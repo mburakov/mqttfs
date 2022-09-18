@@ -38,6 +38,9 @@ typedef int (*FuseHandler)(struct MqttfsNode*, uint64_t, const void*, int);
 static const FuseHandler g_fuse_handlers[] = {
     [FUSE_LOOKUP] = MqttfsNodeLookup,
     [FUSE_GETATTR] = MqttfsNodeGetAttr,
+    [FUSE_OPEN] = MqttfsNodeOpen,
+    [FUSE_READ] = MqttfsNodeRead,
+    [FUSE_RELEASE] = MqttfsNodeRelease,
     [FUSE_INIT] = MqttfsNodeInit,
     [FUSE_OPENDIR] = MqttfsNodeOpenDir,
     [FUSE_READDIR] = MqttfsNodeReadDir,

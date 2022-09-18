@@ -223,6 +223,36 @@ int MqttfsNodeGetAttr(struct MqttfsNode* node, uint64_t unique,
   return WriteFuseReply(fuse, unique, &attr_out, sizeof(attr_out));
 }
 
+int MqttfsNodeOpen(struct MqttfsNode* node, uint64_t unique, const void* data,
+                   int fuse) {
+  (void)data;
+  LOG("[%p]->%s()", (void*)node, __func__);
+  struct fuse_open_out open_out = {
+      .fh = (uint64_t)&node->buffer,
+      .open_flags = FOPEN_DIRECT_IO,
+  };
+  return WriteFuseReply(fuse, unique, &open_out, sizeof(open_out));
+}
+
+int MqttfsNodeRead(struct MqttfsNode* node, uint64_t unique, const void* data,
+                   int fuse) {
+  const struct fuse_read_in* read_in = data;
+  const struct MqttfsBuffer* buffer = (void*)read_in->fh;
+  LOG("[%p]->%s(fh=%p, offset=%lu, size=%u)", (void*)node, __func__,
+      (const void*)buffer, read_in->offset, read_in->size);
+  const void* buffer_data = (const char*)buffer->data + read_in->offset;
+  size_t buffer_size = MIN(read_in->size, buffer->size - read_in->offset);
+  return WriteFuseReply(fuse, unique, buffer_data, buffer_size);
+}
+
+int MqttfsNodeRelease(struct MqttfsNode* node, uint64_t unique,
+                      const void* data, int fuse) {
+  const struct fuse_release_in* release_in = data;
+  struct MqttfsBuffer* handle = (void*)release_in->fh;
+  LOG("[%p]->%s(fh=%p)", (void*)node, __func__, (void*)handle);
+  return WriteFuseStatus(fuse, unique, 0);
+}
+
 int MqttfsNodeInit(struct MqttfsNode* node, uint64_t unique, const void* data,
                    int fuse) {
   (void)data;

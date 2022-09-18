@@ -38,6 +38,12 @@ int MqttfsNodeLookup(struct MqttfsNode* node, uint64_t unique, const void* data,
                      int fuse);
 int MqttfsNodeGetAttr(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse);
+int MqttfsNodeOpen(struct MqttfsNode* node, uint64_t unique, const void* data,
+                   int fuse);
+int MqttfsNodeRead(struct MqttfsNode* node, uint64_t unique, const void* data,
+                   int fuse);
+int MqttfsNodeRelease(struct MqttfsNode* node, uint64_t unique,
+                      const void* data, int fuse);
 int MqttfsNodeInit(struct MqttfsNode* node, uint64_t unique, const void* data,
                    int fuse);
 int MqttfsNodeOpenDir(struct MqttfsNode* node, uint64_t unique,
