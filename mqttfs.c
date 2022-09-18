@@ -134,6 +134,7 @@ static int WriteFuseReply(int fuse, uint64_t unique, const void* data,
 
 static struct fuse_attr GetNodeAttr(struct MqttfsNode* node) {
   struct fuse_attr attr = {
+      .ino = (uint64_t)node,
       .size = node->buffer.size,
       .mode = node->children ? (S_IFDIR | 0755) : (S_IFREG | 0644),
   };
