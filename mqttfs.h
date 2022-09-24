@@ -26,10 +26,19 @@ struct MqttfsBuffer {
   size_t size;
 };
 
+struct MqttfsHandle {
+  int updated;
+  uint64_t poll_handle;
+  struct MqttfsBuffer* buffer;
+  struct MqttfsHandle* prev;
+  struct MqttfsHandle* next;
+};
+
 struct MqttfsNode {
   char* name;
   void* children;
   struct MqttfsBuffer buffer;
+  struct MqttfsHandle* handles;
 };
 
 int MqttfsNodeUnknown(struct MqttfsNode* node, uint64_t unique,
@@ -52,6 +61,8 @@ int MqttfsNodeReadDir(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse);
 int MqttfsNodeReleaseDir(struct MqttfsNode* node, uint64_t unique,
                          const void* data, int fuse);
+int MqttfsNodePoll(struct MqttfsNode* node, uint64_t unique, const void* data,
+                   int fuse);
 void MqttfsNodeCleanup(struct MqttfsNode* node);
 
 void MqttfsStore(void* root_node, const char* topic, size_t topic_size,

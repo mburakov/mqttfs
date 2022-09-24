@@ -19,6 +19,7 @@
 
 #include <errno.h>
 #include <linux/fuse.h>
+#include <poll.h>
 #include <search.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -57,6 +58,11 @@ rollback_node:
 
 static void DestroyNode(void* node) {
   struct MqttfsNode* real_node = node;
+  for (struct MqttfsHandle* it = real_node->handles; it;) {
+    struct MqttfsHandle* next = it->next;
+    free(it);
+    it = next;
+  }
   free(real_node->buffer.data);
   tdestroy(real_node->children, DestroyNode);
   free(real_node->name);
@@ -102,6 +108,34 @@ static void CollectDirents(const void* nodep, VISIT which, int depth) {
   }
 }
 
+static struct MqttfsHandle* CreateHandle(struct MqttfsNode* node) {
+  struct MqttfsHandle* handle = calloc(1, sizeof(struct MqttfsHandle));
+  if (!handle) {
+    LOG("Failed to allocate hande (%s)", strerror(errno));
+    return NULL;
+  }
+
+  handle->buffer = &node->buffer;
+  if (!node->handles) {
+    node->handles = handle;
+    return handle;
+  }
+
+  struct MqttfsHandle* prev = node->handles;
+  while (prev->next) prev = prev->next;
+  prev->next = handle;
+  handle->prev = prev;
+  return handle;
+}
+
+static void DestroyHandle(struct MqttfsNode* node,
+                          struct MqttfsHandle* handle) {
+  if (handle->prev) handle->prev->next = handle->next;
+  if (handle->next) handle->next->prev = handle->prev;
+  if (node->handles == handle) node->handles = handle->next;
+  free(handle);
+}
+
 static int WriteFuseStatus(int fuse, uint64_t unique, int status) {
   struct fuse_out_header out_header = {
       .len = sizeof(struct fuse_out_header),
@@ -132,6 +166,23 @@ static int WriteFuseReply(int fuse, uint64_t unique, const void* data,
   return 0;
 }
 
+static int WriteFuseNotify(int fuse, int32_t code, const void* data,
+                           size_t size) {
+  struct fuse_out_header out_header = {
+      .len = sizeof(struct fuse_out_header) + (uint32_t)size,
+      .error = code,
+  };
+  struct iovec reply[] = {
+      {.iov_base = &out_header, .iov_len = sizeof(out_header)},
+      {.iov_base = (void*)(uintptr_t)data, .iov_len = size},
+  };
+  if (writev(fuse, reply, LENGTH(reply)) != out_header.len) {
+    LOG("Failed to write fuse notification (%s)", strerror(errno));
+    return -1;
+  }
+  return 0;
+}
+
 static struct fuse_attr GetNodeAttr(struct MqttfsNode* node) {
   struct fuse_attr attr = {
       .ino = (uint64_t)node,
@@ -141,20 +192,21 @@ static struct fuse_attr GetNodeAttr(struct MqttfsNode* node) {
   return attr;
 }
 
-static int RecurseStore(struct MqttfsNode* node, const char* topic,
-                        size_t topic_size, const void* payload,
-                        size_t payload_size) {
+static struct MqttfsNode* RecurseStore(struct MqttfsNode* node,
+                                       const char* topic, size_t topic_size,
+                                       const void* payload,
+                                       size_t payload_size) {
   if (!topic_size) {
     void* payload_copy = malloc(payload_size);
     if (!payload_copy) {
       LOG("Failed to copy payload");
-      return -1;
+      return NULL;
     }
     memcpy(payload_copy, payload, payload_size);
     free(node->buffer.data);
     node->buffer.data = payload_copy;
     node->buffer.size = payload_size;
-    return 0;
+    return node;
   }
 
   const char* separator = memchr(topic, '/', topic_size);
@@ -167,7 +219,7 @@ static int RecurseStore(struct MqttfsNode* node, const char* topic,
   void** pchild = tsearch(&name, &node->children, CompareNodes);
   if (!pchild) {
     LOG("Failed to store child node (%s)", strerror(errno));
-    return -1;
+    return NULL;
   }
   int child_created = *pchild == &name;
   if (child_created) {
@@ -175,24 +227,22 @@ static int RecurseStore(struct MqttfsNode* node, const char* topic,
     if (!child) {
       LOG("Failed to create node");
       tdelete(&name, &node->children, CompareNodes);
-      return -1;
+      return NULL;
     }
     *pchild = child;
   }
 
   const char* next_topic = separator ? topic + name_size + 1 : NULL;
   size_t next_topic_size = separator ? topic_size - name_size - 1 : 0;
-  if (RecurseStore(*pchild, next_topic, next_topic_size, payload,
-                   payload_size) == -1) {
-    if (child_created) {
-      struct MqttfsNode* child = *pchild;
-      tdelete(&name, &node->children, CompareNodes);
-      free(child->name);
-      free(child);
-    }
-    return -1;
+  struct MqttfsNode* result =
+      RecurseStore(*pchild, next_topic, next_topic_size, payload, payload_size);
+  if (!result && child_created) {
+    struct MqttfsNode* child = *pchild;
+    tdelete(&name, &node->children, CompareNodes);
+    free(child->name);
+    free(child);
   }
-  return 0;
+  return result;
 }
 
 int MqttfsNodeUnknown(struct MqttfsNode* node, uint64_t unique,
@@ -227,8 +277,13 @@ int MqttfsNodeOpen(struct MqttfsNode* node, uint64_t unique, const void* data,
                    int fuse) {
   (void)data;
   LOG("[%p]->%s()", (void*)node, __func__);
+  struct MqttfsHandle* handle = CreateHandle(node);
+  if (!handle) {
+    LOG("Failed to allocate handle (%s)", strerror(errno));
+    return WriteFuseStatus(fuse, unique, -ENOMEM);
+  }
   struct fuse_open_out open_out = {
-      .fh = (uint64_t)&node->buffer,
+      .fh = (uint64_t)handle,
       .open_flags = FOPEN_DIRECT_IO,
   };
   return WriteFuseReply(fuse, unique, &open_out, sizeof(open_out));
@@ -237,19 +292,21 @@ int MqttfsNodeOpen(struct MqttfsNode* node, uint64_t unique, const void* data,
 int MqttfsNodeRead(struct MqttfsNode* node, uint64_t unique, const void* data,
                    int fuse) {
   const struct fuse_read_in* read_in = data;
-  const struct MqttfsBuffer* buffer = (void*)read_in->fh;
+  const struct MqttfsHandle* handle = (void*)read_in->fh;
   LOG("[%p]->%s(fh=%p, offset=%lu, size=%u)", (void*)node, __func__,
-      (const void*)buffer, read_in->offset, read_in->size);
-  const void* buffer_data = (const char*)buffer->data + read_in->offset;
-  size_t buffer_size = MIN(read_in->size, buffer->size - read_in->offset);
+      (const void*)handle, read_in->offset, read_in->size);
+  const void* buffer_data = (const char*)handle->buffer->data + read_in->offset;
+  size_t buffer_size =
+      MIN(read_in->size, handle->buffer->size - read_in->offset);
   return WriteFuseReply(fuse, unique, buffer_data, buffer_size);
 }
 
 int MqttfsNodeRelease(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse) {
   const struct fuse_release_in* release_in = data;
-  struct MqttfsBuffer* handle = (void*)release_in->fh;
+  struct MqttfsHandle* handle = (void*)release_in->fh;
   LOG("[%p]->%s(fh=%p)", (void*)node, __func__, (void*)handle);
+  DestroyHandle(node, handle);
   return WriteFuseStatus(fuse, unique, 0);
 }
 
@@ -261,6 +318,7 @@ int MqttfsNodeInit(struct MqttfsNode* node, uint64_t unique, const void* data,
   node->children = NULL;
   node->buffer.data = NULL;
   node->buffer.size = 0;
+  node->handles = NULL;
   struct fuse_init_out init_out = {
       .major = FUSE_KERNEL_VERSION,
       .minor = FUSE_KERNEL_MINOR_VERSION,
@@ -308,7 +366,7 @@ int MqttfsNodeOpenDir(struct MqttfsNode* node, uint64_t unique,
 rollback_handle:
   free(buffer);
 report_error:
-  return WriteFuseStatus(fuse, unique, -EIO);
+  return WriteFuseStatus(fuse, unique, -ENOMEM);
 }
 
 int MqttfsNodeReadDir(struct MqttfsNode* node, uint64_t unique,
@@ -341,13 +399,56 @@ int MqttfsNodeReleaseDir(struct MqttfsNode* node, uint64_t unique,
   return WriteFuseStatus(fuse, unique, 0);
 }
 
+int MqttfsNodePoll(struct MqttfsNode* node, uint64_t unique, const void* data,
+                   int fuse) {
+  const struct fuse_poll_in* poll_in = data;
+  struct MqttfsHandle* handle = (void*)poll_in->fh;
+  LOG("[%p]->%s(fh=%p, kh=%lu, flags=0x%x, events=0x%x)", (void*)node, __func__,
+      (void*)poll_in->fh, poll_in->kh, poll_in->flags, poll_in->events);
+
+  uint32_t revents = poll_in->events & POLLOUT;
+  if (poll_in->events & POLLIN) {
+    if (poll_in->flags & FUSE_POLL_SCHEDULE_NOTIFY)
+      handle->poll_handle = poll_in->kh;
+    if (handle->updated) {
+      handle->updated = 0;
+      revents |= POLLIN;
+    }
+  }
+
+  struct fuse_poll_out poll_out = {
+      .revents = revents,
+  };
+  return WriteFuseReply(fuse, unique, &poll_out, sizeof(poll_out));
+}
+
 void MqttfsNodeCleanup(struct MqttfsNode* node) {
   tdestroy(node->children, DestroyNode);
 }
 
-void MqttfsStore(void* root_node, const char* topic, size_t topic_size,
+void MqttfsStore(void* publish_user, const char* topic, size_t topic_size,
                  const void* payload, size_t payload_size) {
   LOG("%.*s: %.*s", (int)topic_size, topic, (int)payload_size,
       (const char*)payload);
-  RecurseStore(root_node, topic, topic_size, payload, payload_size);
+  struct {
+    int fuse;
+    struct MqttfsNode* root;
+  }* context = publish_user;
+  struct MqttfsNode* node =
+      RecurseStore(context->root, topic, topic_size, payload, payload_size);
+  if (!node) {
+    LOG("Failed to handle mqtt publish");
+    return;
+  }
+
+  for (struct MqttfsHandle* it = node->handles; it; it = it->next) {
+    if (!it->poll_handle) continue;
+    it->updated = 1;
+    LOG("[%p] Notifying poll handle %lu", (void*)node, it->poll_handle);
+    struct fuse_notify_poll_wakeup_out notify_poll_wakeup_out = {
+        .kh = it->poll_handle,
+    };
+    WriteFuseNotify(context->fuse, FUSE_NOTIFY_POLL, &notify_poll_wakeup_out,
+                    sizeof(notify_poll_wakeup_out));
+  }
 }

@@ -45,6 +45,7 @@ static const FuseHandler g_fuse_handlers[] = {
     [FUSE_OPENDIR] = MqttfsNodeOpenDir,
     [FUSE_READDIR] = MqttfsNodeReadDir,
     [FUSE_RELEASEDIR] = MqttfsNodeReleaseDir,
+    [FUSE_POLL] = MqttfsNodePoll,
 };
 
 static void SignalHandler(int signal) { g_signal = signal; }
@@ -132,7 +133,15 @@ int main(int argc, char* argv[]) {
   struct MqttfsNode root;
   struct MqttContext context;
   static const uint16_t kMqttKeepalive = UINT16_MAX;
-  if (MqttContextInit(&context, kMqttKeepalive, mqtt, MqttfsStore, &root)) {
+  struct {
+    int fuse;
+    struct MqttfsNode* root;
+  } publish_user = {
+      .fuse = fuse,
+      .root = &root,
+  };
+  if (MqttContextInit(&context, kMqttKeepalive, mqtt, MqttfsStore,
+                      &publish_user)) {
     LOG("Failed to init mqtt context");
     goto rollback_mount;
   }
