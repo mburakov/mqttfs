@@ -37,6 +37,7 @@ struct MqttfsHandle {
 struct MqttfsNode {
   char* name;
   void* children;
+  int present_as_dir;
   struct MqttfsBuffer buffer;
   struct MqttfsHandle* handles;
 };

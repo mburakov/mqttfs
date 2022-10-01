@@ -47,13 +47,10 @@ static struct MqttfsNode* CreateNode(const char* name) {
   node->name = strdup(name);
   if (!node->name) {
     LOG("Failed to copy node name (%s)", strerror(errno));
-    goto rollback_node;
+    free(node);
+    return NULL;
   }
   return node;
-
-rollback_node:
-  free(node);
-  return NULL;
 }
 
 static void DestroyNode(void* node) {
@@ -67,6 +64,10 @@ static void DestroyNode(void* node) {
   tdestroy(real_node->children, DestroyNode);
   free(real_node->name);
   free(real_node);
+}
+
+static int IsDirectory(const struct MqttfsNode* node) {
+  return node->present_as_dir || node->children;
 }
 
 static int AppendDirent(struct MqttfsBuffer* buffer, uint64_t node,
@@ -102,7 +103,7 @@ static void CollectDirents(const void* nodep, VISIT which, int depth) {
 
   const struct MqttfsNode* node = *(const void* const*)nodep;
   if (AppendDirent(twalk_closure->buffer, (uint64_t)node,
-                   node->children ? S_IFDIR : S_IFREG, node->name) == -1) {
+                   IsDirectory(node) ? S_IFDIR : S_IFREG, node->name) == -1) {
     LOG("Failed to append dirent for %s", node->name);
     twalk_closure->result = -1;
   }
@@ -187,7 +188,7 @@ static struct fuse_attr GetNodeAttr(struct MqttfsNode* node) {
   struct fuse_attr attr = {
       .ino = (uint64_t)node,
       .size = node->buffer.size,
-      .mode = node->children ? (S_IFDIR | 0755) : (S_IFREG | 0644),
+      .mode = IsDirectory(node) ? (S_IFDIR | 0755) : (S_IFREG | 0644),
   };
   return attr;
 }
