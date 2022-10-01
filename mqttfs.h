@@ -68,6 +68,8 @@ int MqttfsNodeReaddir(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse);
 int MqttfsNodeReleasedir(struct MqttfsNode* node, uint64_t unique,
                          const void* data, int fuse);
+int MqttfsNodeCreate(struct MqttfsNode* node, uint64_t unique, const void* data,
+                     int fuse);
 int MqttfsNodePoll(struct MqttfsNode* node, uint64_t unique, const void* data,
                    int fuse);
 void MqttfsNodeCleanup(struct MqttfsNode* node);

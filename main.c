@@ -49,6 +49,7 @@ static const FuseHandler g_fuse_handlers[] = {
     [FUSE_OPENDIR] = MqttfsNodeOpendir,
     [FUSE_READDIR] = MqttfsNodeReaddir,
     [FUSE_RELEASEDIR] = MqttfsNodeReleasedir,
+    [FUSE_CREATE] = MqttfsNodeCreate,
     [FUSE_POLL] = MqttfsNodePoll,
 };
 

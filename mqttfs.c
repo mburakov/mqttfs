@@ -240,10 +240,58 @@ static struct MqttfsNode* RecurseStore(struct MqttfsNode* node,
   if (!result && child_created) {
     struct MqttfsNode* child = *pchild;
     tdelete(&name, &node->children, CompareNodes);
-    free(child->name);
-    free(child);
+    DestroyNode(child);
   }
   return result;
+}
+
+static int CreateChildNode(struct MqttfsNode* node, uint64_t unique,
+                           const char* name, int present_as_dir, int fuse) {
+  void** pchild = tsearch(&name, &node->children, CompareNodes);
+  if (!pchild) {
+    LOG("Failed to store child node (%s)", strerror(errno));
+    goto report_error;
+  }
+  if (*pchild != &name) {
+    return WriteFuseStatus(fuse, unique, -EEXIST);
+  }
+
+  struct MqttfsNode* child = CreateNode(name);
+  if (!child) {
+    LOG("Failed to create node");
+    goto rollback_pchild;
+  }
+
+  *pchild = child;
+  child->present_as_dir = present_as_dir;
+  struct fuse_entry_out entry_out = {
+      .nodeid = (uint64_t)child,
+      .attr = GetNodeAttr(child),
+  };
+  if (present_as_dir)
+    return WriteFuseReply(fuse, unique, &entry_out, sizeof(entry_out));
+
+  struct MqttfsHandle* handle = CreateHandle(child);
+  if (!handle) {
+    LOG("Failed to allocate handle (%s)", strerror(errno));
+    goto rollback_child;
+  }
+  struct {
+    struct fuse_entry_out entry_out;
+    struct fuse_open_out open_out;
+  } reply = {
+      .entry_out = entry_out,
+      .open_out.fh = (uint64_t)handle,
+      .open_out.open_flags = FOPEN_DIRECT_IO,
+  };
+  return WriteFuseReply(fuse, unique, &reply, sizeof(reply));
+
+rollback_child:
+  DestroyNode(child);
+rollback_pchild:
+  tdelete(&name, &node->children, CompareNodes);
+report_error:
+  return WriteFuseStatus(fuse, unique, -ENOMEM);
 }
 
 int MqttfsNodeUnknown(struct MqttfsNode* node, uint64_t unique,
@@ -290,29 +338,7 @@ int MqttfsNodeMkdir(struct MqttfsNode* node, uint64_t unique, const void* data,
   const struct fuse_mkdir_in* mkdir_in = data;
   const char* name = (const void*)(mkdir_in + 1);
   LOG("[%p]->%s(%s)", (void*)node, __func__, name);
-  void** pchild = tsearch(&name, &node->children, CompareNodes);
-  if (!pchild) {
-    LOG("Failed to store child node (%s)", strerror(errno));
-    return WriteFuseStatus(fuse, unique, -ENOMEM);
-  }
-  if (*pchild != &name) {
-    return WriteFuseStatus(fuse, unique, -EEXIST);
-  }
-
-  struct MqttfsNode* child = CreateNode(name);
-  if (!child) {
-    LOG("Failed to create node");
-    tdelete(&name, &node->children, CompareNodes);
-    return WriteFuseStatus(fuse, unique, -ENOMEM);
-  }
-
-  *pchild = child;
-  child->present_as_dir = 1;
-  struct fuse_entry_out entry_out = {
-      .nodeid = (uint64_t)child,
-      .attr = GetNodeAttr(child),
-  };
-  return WriteFuseReply(fuse, unique, &entry_out, sizeof(entry_out));
+  return CreateChildNode(node, unique, name, 1, fuse);
 }
 
 int MqttfsNodeUnlink(struct MqttfsNode* node, uint64_t unique, const void* data,
@@ -453,6 +479,14 @@ int MqttfsNodeReleasedir(struct MqttfsNode* node, uint64_t unique,
   free(handle->data);
   free(handle);
   return WriteFuseStatus(fuse, unique, 0);
+}
+
+int MqttfsNodeCreate(struct MqttfsNode* node, uint64_t unique, const void* data,
+                     int fuse) {
+  const struct fuse_create_in* create_in = data;
+  const char* name = (const void*)(create_in + 1);
+  LOG("[%p]->%s(%s)", (void*)node, __func__, name);
+  return CreateChildNode(node, unique, name, 0, fuse);
 }
 
 int MqttfsNodePoll(struct MqttfsNode* node, uint64_t unique, const void* data,
