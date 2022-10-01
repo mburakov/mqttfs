@@ -315,8 +315,8 @@ int MqttfsNodeMkdir(struct MqttfsNode* node, uint64_t unique, const void* data,
   return WriteFuseReply(fuse, unique, &entry_out, sizeof(entry_out));
 }
 
-int MqttfsNodeRmdir(struct MqttfsNode* node, uint64_t unique, const void* data,
-                    int fuse) {
+int MqttfsNodeUnlink(struct MqttfsNode* node, uint64_t unique, const void* data,
+                     int fuse) {
   const char* name = data;
   LOG("[%p]->%s(%s)", (void*)node, __func__, name);
   void** pchild = tfind(&name, &node->children, CompareNodes);
