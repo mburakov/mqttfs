@@ -264,6 +264,17 @@ int MqttfsNodeLookup(struct MqttfsNode* node, uint64_t unique, const void* data,
   return WriteFuseReply(fuse, unique, &entry_out, sizeof(entry_out));
 }
 
+int MqttfsNodeForget(struct MqttfsNode* node, uint64_t unique, const void* data,
+                     int fuse) {
+  LOG("[%p]->%s()", (void*)node, __func__);
+  (void)unique;
+  (void)data;
+  (void)fuse;
+  // mburakov: This is a noop. Nothing should be touched here, because the node
+  // object is already gone, and all the pointers are dangling.
+  return 0;
+}
+
 int MqttfsNodeGetattr(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse) {
   (void)data;
@@ -272,6 +283,50 @@ int MqttfsNodeGetattr(struct MqttfsNode* node, uint64_t unique,
       .attr = GetNodeAttr(node),
   };
   return WriteFuseReply(fuse, unique, &attr_out, sizeof(attr_out));
+}
+
+int MqttfsNodeMkdir(struct MqttfsNode* node, uint64_t unique, const void* data,
+                    int fuse) {
+  const struct fuse_mkdir_in* mkdir_in = data;
+  const char* name = (const void*)(mkdir_in + 1);
+  LOG("[%p]->%s(%s)", (void*)node, __func__, name);
+  void** pchild = tsearch(&name, &node->children, CompareNodes);
+  if (!pchild) {
+    LOG("Failed to store child node (%s)", strerror(errno));
+    return WriteFuseStatus(fuse, unique, -ENOMEM);
+  }
+  if (*pchild != &name) {
+    return WriteFuseStatus(fuse, unique, -EEXIST);
+  }
+
+  struct MqttfsNode* child = CreateNode(name);
+  if (!child) {
+    LOG("Failed to create node");
+    tdelete(&name, &node->children, CompareNodes);
+    return WriteFuseStatus(fuse, unique, -ENOMEM);
+  }
+
+  *pchild = child;
+  child->present_as_dir = 1;
+  struct fuse_entry_out entry_out = {
+      .nodeid = (uint64_t)child,
+      .attr = GetNodeAttr(child),
+  };
+  return WriteFuseReply(fuse, unique, &entry_out, sizeof(entry_out));
+}
+
+int MqttfsNodeRmdir(struct MqttfsNode* node, uint64_t unique, const void* data,
+                    int fuse) {
+  const char* name = data;
+  LOG("[%p]->%s(%s)", (void*)node, __func__, name);
+  void** pchild = tfind(&name, &node->children, CompareNodes);
+  if (!pchild) {
+    return WriteFuseStatus(fuse, unique, -ENOENT);
+  }
+  struct MqttfsNode* child = *pchild;
+  tdelete(*pchild, &node->children, CompareNodes);
+  DestroyNode(child);
+  return WriteFuseStatus(fuse, unique, 0);
 }
 
 int MqttfsNodeOpen(struct MqttfsNode* node, uint64_t unique, const void* data,
