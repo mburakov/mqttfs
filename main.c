@@ -37,14 +37,14 @@ static volatile sig_atomic_t g_signal;
 typedef int (*FuseHandler)(struct MqttfsNode*, uint64_t, const void*, int);
 static const FuseHandler g_fuse_handlers[] = {
     [FUSE_LOOKUP] = MqttfsNodeLookup,
-    [FUSE_GETATTR] = MqttfsNodeGetAttr,
+    [FUSE_GETATTR] = MqttfsNodeGetattr,
     [FUSE_OPEN] = MqttfsNodeOpen,
     [FUSE_READ] = MqttfsNodeRead,
     [FUSE_RELEASE] = MqttfsNodeRelease,
     [FUSE_INIT] = MqttfsNodeInit,
-    [FUSE_OPENDIR] = MqttfsNodeOpenDir,
-    [FUSE_READDIR] = MqttfsNodeReadDir,
-    [FUSE_RELEASEDIR] = MqttfsNodeReleaseDir,
+    [FUSE_OPENDIR] = MqttfsNodeOpendir,
+    [FUSE_READDIR] = MqttfsNodeReaddir,
+    [FUSE_RELEASEDIR] = MqttfsNodeReleasedir,
     [FUSE_POLL] = MqttfsNodePoll,
 };
 

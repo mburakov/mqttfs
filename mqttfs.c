@@ -263,7 +263,7 @@ int MqttfsNodeLookup(struct MqttfsNode* node, uint64_t unique, const void* data,
   return WriteFuseReply(fuse, unique, &entry_out, sizeof(entry_out));
 }
 
-int MqttfsNodeGetAttr(struct MqttfsNode* node, uint64_t unique,
+int MqttfsNodeGetattr(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse) {
   (void)data;
   LOG("[%p]->%s()", (void*)node, __func__);
@@ -326,7 +326,7 @@ int MqttfsNodeInit(struct MqttfsNode* node, uint64_t unique, const void* data,
   return WriteFuseReply(fuse, unique, &init_out, sizeof(init_out));
 }
 
-int MqttfsNodeOpenDir(struct MqttfsNode* node, uint64_t unique,
+int MqttfsNodeOpendir(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse) {
   (void)data;
   LOG("[%p]->%s()", (void*)node, __func__);
@@ -369,7 +369,7 @@ report_error:
   return WriteFuseStatus(fuse, unique, -ENOMEM);
 }
 
-int MqttfsNodeReadDir(struct MqttfsNode* node, uint64_t unique,
+int MqttfsNodeReaddir(struct MqttfsNode* node, uint64_t unique,
                       const void* data, int fuse) {
   const struct fuse_read_in* read_in = data;
   struct MqttfsBuffer* buffer = (void*)read_in->fh;
@@ -389,7 +389,7 @@ int MqttfsNodeReadDir(struct MqttfsNode* node, uint64_t unique,
   return WriteFuseReply(fuse, unique, data, size);
 }
 
-int MqttfsNodeReleaseDir(struct MqttfsNode* node, uint64_t unique,
+int MqttfsNodeReleasedir(struct MqttfsNode* node, uint64_t unique,
                          const void* data, int fuse) {
   const struct fuse_release_in* release_in = data;
   struct MqttfsBuffer* handle = (void*)release_in->fh;
