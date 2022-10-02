@@ -18,6 +18,9 @@
 #ifndef MQTTFS_UTILS_H_
 #define MQTTFS_UTILS_H_
 
+#include <stdbool.h>
+#include <stddef.h>
+
 #define STR_IMPL(op) #op
 #define STR(op) STR_IMPL(op)
 #define LOG(fmt, ...) \
@@ -25,6 +28,17 @@
 #define LENGTH(op) (sizeof(op) / sizeof *(op))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+struct Buffer {
+  void* data;
+  size_t size;
+  size_t alloc;
+};
+
+void BufferInit(struct Buffer* buffer);
+void* BufferReserve(struct Buffer* buffer, size_t size);
+bool BufferAssign(struct Buffer* buffer, const void* data, size_t size);
+void BufferCleanup(struct Buffer* buffer);
 
 void LogImpl(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 unsigned long long MillisNow(void);

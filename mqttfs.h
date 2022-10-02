@@ -18,18 +18,15 @@
 #ifndef MQTTFS_MQTTFS_H_
 #define MQTTFS_MQTTFS_H_
 
-#include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
-struct MqttfsBuffer {
-  void* data;
-  size_t size;
-};
+#include "utils.h"
 
 struct MqttfsHandle {
-  int updated;
+  bool updated;
   uint64_t poll_handle;
-  struct MqttfsBuffer* buffer;
+  struct Buffer* buffer;
   struct MqttfsHandle* prev;
   struct MqttfsHandle* next;
 };
@@ -37,44 +34,16 @@ struct MqttfsHandle {
 struct MqttfsNode {
   char* name;
   void* children;
-  int present_as_dir;
-  struct MqttfsBuffer buffer;
+  bool present_as_dir;
+  struct Buffer buffer;
   struct MqttfsHandle* handles;
 };
 
-int MqttfsNodeUnknown(struct MqttfsNode* node, uint64_t unique,
-                      const void* data, int fuse);
-int MqttfsNodeLookup(struct MqttfsNode* node, uint64_t unique, const void* data,
-                     int fuse);
-int MqttfsNodeForget(struct MqttfsNode* node, uint64_t unique, const void* data,
-                     int fuse);
-int MqttfsNodeGetattr(struct MqttfsNode* node, uint64_t unique,
-                      const void* data, int fuse);
-int MqttfsNodeMkdir(struct MqttfsNode* node, uint64_t unique, const void* data,
-                    int fuse);
-int MqttfsNodeUnlink(struct MqttfsNode* node, uint64_t unique, const void* data,
-                     int fuse);
-int MqttfsNodeOpen(struct MqttfsNode* node, uint64_t unique, const void* data,
-                   int fuse);
-int MqttfsNodeRead(struct MqttfsNode* node, uint64_t unique, const void* data,
-                   int fuse);
-int MqttfsNodeRelease(struct MqttfsNode* node, uint64_t unique,
-                      const void* data, int fuse);
-int MqttfsNodeInit(struct MqttfsNode* node, uint64_t unique, const void* data,
-                   int fuse);
-int MqttfsNodeOpendir(struct MqttfsNode* node, uint64_t unique,
-                      const void* data, int fuse);
-int MqttfsNodeReaddir(struct MqttfsNode* node, uint64_t unique,
-                      const void* data, int fuse);
-int MqttfsNodeReleasedir(struct MqttfsNode* node, uint64_t unique,
-                         const void* data, int fuse);
-int MqttfsNodeCreate(struct MqttfsNode* node, uint64_t unique, const void* data,
-                     int fuse);
-int MqttfsNodePoll(struct MqttfsNode* node, uint64_t unique, const void* data,
-                   int fuse);
-void MqttfsNodeCleanup(struct MqttfsNode* node);
+struct MqttfsHandle* MqttfsHandleCreate(struct MqttfsNode* node);
+void MqttfsHandleDestroy(struct MqttfsNode* node, struct MqttfsHandle* handle);
 
-void MqttfsStore(void* root_node, const char* topic, size_t topic_size,
-                 const void* payload, size_t payload_size);
+struct MqttfsNode* MqttfsNodeCreate(const char* name);
+bool MqttfsNodeIsDirectory(const struct MqttfsNode* node);
+void MqttfsNodeDestroy(void* node);
 
 #endif  // MQTTFS_MQTTFS_H_

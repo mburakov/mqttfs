@@ -18,26 +18,29 @@
 #ifndef MQTTFS_MQTT_H_
 #define MQTTFS_MQTT_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "utils.h"
 
 typedef void (*MqttPublishCallback)(void* user, const char* topic,
                                     size_t topic_size, const void* payload,
                                     size_t payload_size);
 
 struct MqttContext {
-  void* buffer_data;
-  size_t buffer_size;
-  size_t buffer_alloc;
   MqttPublishCallback publish_callback;
   void* publish_user;
-  int (*handler)(struct MqttContext*, int);
+  struct Buffer buffer;
+  bool (*handler)(struct MqttContext*, int);
 };
 
-int MqttContextInit(struct MqttContext* context, uint16_t keepalive, int mqtt,
-                    MqttPublishCallback publish_callback, void* publish_user);
-int MqttContextPing(struct MqttContext* context, int mqtt);
-int MqttContextPublish(struct MqttContext* context, int mqtt);
+bool MqttContextInit(struct MqttContext* context, uint16_t keepalive, int mqtt,
+                     MqttPublishCallback publish_callback, void* publish_user);
+bool MqttContextPing(struct MqttContext* context, int mqtt);
+bool MqttContextPublish(struct MqttContext* context, int mqtt,
+                        const char* topic, size_t topic_size,
+                        const void* payload, size_t payload_size);
 void MqttContextCleanup(struct MqttContext* context);
 
 #endif  // MQTTFS_MQTT_H_

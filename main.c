@@ -18,116 +18,99 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/fuse.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
 #include <unistd.h>
 
+#include "fuse.h"
 #include "mqtt.h"
-#include "mqttfs.h"
 #include "utils.h"
+
+struct Context {
+  int mqtt_fd;
+  int fuse_fd;
+  struct MqttContext mqtt;
+  struct FuseContext fuse;
+};
 
 static volatile sig_atomic_t g_signal;
 
-typedef int (*FuseHandler)(struct MqttfsNode*, uint64_t, const void*, int);
-static const FuseHandler g_fuse_handlers[] = {
-    [FUSE_LOOKUP] = MqttfsNodeLookup,
-    [FUSE_FORGET] = MqttfsNodeForget,
-    [FUSE_GETATTR] = MqttfsNodeGetattr,
-    [FUSE_MKDIR] = MqttfsNodeMkdir,
-    [FUSE_UNLINK] = MqttfsNodeUnlink,
-    [FUSE_RMDIR] = MqttfsNodeUnlink,
-    [FUSE_OPEN] = MqttfsNodeOpen,
-    [FUSE_READ] = MqttfsNodeRead,
-    [FUSE_RELEASE] = MqttfsNodeRelease,
-    [FUSE_INIT] = MqttfsNodeInit,
-    [FUSE_OPENDIR] = MqttfsNodeOpendir,
-    [FUSE_READDIR] = MqttfsNodeReaddir,
-    [FUSE_RELEASEDIR] = MqttfsNodeReleasedir,
-    [FUSE_CREATE] = MqttfsNodeCreate,
-    [FUSE_POLL] = MqttfsNodePoll,
-};
-
 static void SignalHandler(int signal) { g_signal = signal; }
 
-static int HandleFuse(int fuse, struct MqttfsNode* root) {
-  static char buffer[FUSE_MIN_READ_BUFFER];
-  ssize_t size = read(fuse, buffer, sizeof(buffer));
-  if (size == -1) {
-    LOG("Failed to read fuse (%s)", strerror(errno));
-    return -1;
-  }
-  struct fuse_in_header* in_header = (void*)buffer;
-  struct MqttfsNode* node = root;
-  if (in_header->nodeid && in_header->nodeid != FUSE_ROOT_ID)
-    node = (struct MqttfsNode*)in_header->nodeid;
-  FuseHandler handler = MqttfsNodeUnknown;
-  void* data = &in_header->opcode;
-  if (in_header->opcode < LENGTH(g_fuse_handlers) &&
-      g_fuse_handlers[in_header->opcode]) {
-    handler = g_fuse_handlers[in_header->opcode];
-    data = buffer + sizeof(struct fuse_in_header);
-  }
-  if (handler(node, in_header->unique, data, fuse) == -1) {
-    LOG("Failed to handle fuse request");
-    return -1;
-  }
-  return 0;
-}
-
-static int ParseAddress(const char* arg, struct sockaddr_in* addr) {
+static bool ParseAddress(const char* arg, struct sockaddr_in* addr) {
   char ip[sizeof("xxx.xxx.xxx.xxx")];
   uint16_t port = 1883;
-  if (sscanf(arg, "%[0-9.]:%hd", ip, &port) < 1) return -1;
+  if (sscanf(arg, "%[0-9.]:%hd", ip, &port) < 1) return false;
   addr->sin_family = AF_INET;
   addr->sin_port = htons(port);
   addr->sin_addr.s_addr = inet_addr(ip);
-  return 0;
+  return true;
 }
 
-static int DoMount(int fuse, const char* mountpoint) {
+static bool DoMount(int fuse, const char* mountpoint) {
   char options[256];
   snprintf(options, sizeof(options),
            "fd=%d,rootmode=40000,user_id=0,group_id=0,allow_other", fuse);
   return mount("mqttfs", mountpoint, "fuse.mqttfs", MS_NOSUID | MS_NODEV,
-               options);
+               options) == 0;
+}
+
+static void OnMqttPublish(void* user, const char* topic, size_t topic_size,
+                          const void* payload, size_t payload_size) {
+  struct Context* context = user;
+  if (!FuseContextWrite(&context->fuse, context->fuse_fd, topic, topic_size,
+                        payload, payload_size)) {
+    LOG("Failed to write to fuse");
+  }
+}
+
+static void OnFuseWrite(void* user, const char* pathname, size_t pathname_size,
+                        const void* data, size_t data_size) {
+  struct Context* context = user;
+  if (!MqttContextPublish(&context->mqtt, context->mqtt_fd, pathname,
+                          pathname_size, data, data_size)) {
+    LOG("Failed to publish to mqtt");
+  }
 }
 
 int main(int argc, char* argv[]) {
+  struct Context context;
+
   if (argc < 3) {
     LOG("Usage: %s [address[:port]] [mountpoint]", argv[0]);
     return EXIT_FAILURE;
   }
   struct sockaddr_in addr;
-  if (ParseAddress(argv[1], &addr) == -1) {
+  if (!ParseAddress(argv[1], &addr)) {
     LOG("Failed to parse address argument");
     return EXIT_FAILURE;
   }
-  int mqtt = socket(AF_INET, SOCK_STREAM, 0);
-  if (mqtt == -1) {
+  context.mqtt_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (context.mqtt_fd == -1) {
     LOG("Failed to create mqtt socket (%s)", strerror(errno));
     return EXIT_FAILURE;
   }
 
   int status = EXIT_FAILURE;
-  if (connect(mqtt, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+  if (connect(context.mqtt_fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
     LOG("Faield to connect mqtt socket (%s)", strerror(errno));
-    goto rollback_mqtt;
+    goto rollback_mqtt_fd;
   }
-  int fuse = open("/dev/fuse", O_RDWR);
-  if (fuse == -1) {
+  context.fuse_fd = open("/dev/fuse", O_RDWR);
+  if (context.fuse_fd == -1) {
     LOG("Failed to open fuse device (%s)", strerror(errno));
-    goto rollback_mqtt;
+    goto rollback_mqtt_fd;
   }
 
-  if (DoMount(fuse, argv[2]) == -1) {
+  if (!DoMount(context.fuse_fd, argv[2])) {
     LOG("Failed to mount fuse (%s)", strerror(errno));
-    goto rollback_fuse;
+    goto rollback_fuse_fd;
   }
 
   if (signal(SIGINT, SignalHandler) == SIG_ERR ||
@@ -135,27 +118,20 @@ int main(int argc, char* argv[]) {
     LOG("Failed to set signal handlers (%s)", strerror(errno));
     goto rollback_mount;
   }
-  struct MqttfsNode root;
-  struct MqttContext context;
+
+  uint64_t now = MillisNow();
   static const uint16_t kMqttKeepalive = UINT16_MAX;
-  struct {
-    int fuse;
-    struct MqttfsNode* root;
-  } publish_user = {
-      .fuse = fuse,
-      .root = &root,
-  };
-  if (MqttContextInit(&context, kMqttKeepalive, mqtt, MqttfsStore,
-                      &publish_user)) {
+  if (!MqttContextInit(&context.mqtt, kMqttKeepalive, context.mqtt_fd,
+                       OnMqttPublish, &context)) {
     LOG("Failed to init mqtt context");
     goto rollback_mount;
   }
 
-  uint64_t now = MillisNow();
+  FuseContextInit(&context.fuse, OnFuseWrite, &context);
   while (!g_signal) {
     struct pollfd pfds[] = {
-        {.fd = fuse, .events = POLLIN},
-        {.fd = mqtt, .events = POLLIN},
+        {.fd = context.mqtt_fd, .events = POLLIN},
+        {.fd = context.fuse_fd, .events = POLLIN},
     };
     uint64_t timeout = now + kMqttKeepalive * 1000ull - MillisNow();
     int result = poll(pfds, LENGTH(pfds), (int)timeout);
@@ -163,34 +139,35 @@ int main(int argc, char* argv[]) {
       case -1:
         if (errno == EINTR) continue;
         LOG("Failed to poll (%s)", strerror(errno));
-        goto rollback_root;
+        goto rollback_context;
       case 0:
         now = MillisNow();
-        if (MqttContextPing(&context, mqtt) != -1) continue;
+        if (!MqttContextPing(&context.mqtt, context.mqtt_fd)) continue;
         LOG("Failed to ping mqtt broker");
-        goto rollback_root;
+        goto rollback_context;
       default:
         break;
     }
-    if (pfds[0].revents && HandleFuse(fuse, &root) == -1) {
-      LOG("Failed to handle fuse io event");
-      goto rollback_root;
-    }
-    if (pfds[1].revents && context.handler(&context, mqtt) == -1) {
+    if (pfds[0].revents &&
+        !context.mqtt.handler(&context.mqtt, context.mqtt_fd)) {
       LOG("Failed to handle mqtt io event");
-      goto rollback_root;
+      goto rollback_context;
+    }
+    if (pfds[1].revents && !FuseContextHandle(&context.fuse, context.fuse_fd)) {
+      LOG("Failed to handle fuse io event");
+      goto rollback_context;
     }
   }
   status = EXIT_SUCCESS;
 
-rollback_root:
-  MqttfsNodeCleanup(&root);
-  MqttContextCleanup(&context);
+rollback_context:
+  FuseContextCleanup(&context.fuse);
+  MqttContextCleanup(&context.mqtt);
 rollback_mount:
   umount(argv[2]);
-rollback_fuse:
-  close(fuse);
-rollback_mqtt:
-  close(mqtt);
+rollback_fuse_fd:
+  close(context.fuse_fd);
+rollback_mqtt_fd:
+  close(context.mqtt_fd);
   return status;
 }

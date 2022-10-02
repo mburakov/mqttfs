@@ -17,12 +17,13 @@
 
 #include "mqtt.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <setjmp.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -35,25 +36,11 @@ enum PublishParseResult {
   kPublishParseResultError,
 };
 
-static void* GetBuffer(struct MqttContext* context, size_t size) {
-  size_t buffer_alloc = context->buffer_size + size;
-  if (buffer_alloc > context->buffer_alloc) {
-    void* buffer_data = realloc(context->buffer_data, buffer_alloc);
-    if (!buffer_data) {
-      LOG("Failed to reallocate buffer (%s)", strerror(errno));
-      return NULL;
-    }
-    context->buffer_data = buffer_data;
-    context->buffer_alloc = buffer_alloc;
-  }
-  return ((char*)context->buffer_data) + context->buffer_size;
-}
-
 static uint8_t ReadByte(const struct MqttContext* context, size_t* offset,
                         jmp_buf jmpbuf) {
-  if (*offset == context->buffer_size)
+  if (*offset == context->buffer.size)
     longjmp(jmpbuf, kPublishParseResultReadMore);
-  uint8_t* buffer_data = context->buffer_data;
+  uint8_t* buffer_data = context->buffer.data;
   return buffer_data[(*offset)++];
 }
 
@@ -79,11 +66,11 @@ static enum PublishParseResult ParsePublish(struct MqttContext* context) {
   size_t offset = 0;
   uint8_t packet_type = ReadByte(context, &offset, jmpbuf);
   size_t remaining_length = ReadVarint(context, &offset, jmpbuf);
-  if (remaining_length > context->buffer_size)
+  if (remaining_length > context->buffer.size)
     return kPublishParseResultReadMore;
 
   if ((packet_type & 0xf0) == 0x30) {
-    const uint8_t* varheader = (uint8_t*)context->buffer_data + offset;
+    const uint8_t* varheader = (uint8_t*)context->buffer.data + offset;
     uint16_t topic_size = (varheader[0] << 8 | varheader[1]) & 0xffff;
     const char* topic = (const void*)(varheader + 2);
     const char* payload = topic + topic_size;
@@ -92,27 +79,30 @@ static enum PublishParseResult ParsePublish(struct MqttContext* context) {
                               payload_size);
   }
 
-  size_t leftovers = context->buffer_size - remaining_length - offset;
-  void* from = (char*)context->buffer_data + remaining_length + offset;
-  memmove(context->buffer_data, from, leftovers);
-  context->buffer_size = leftovers;
+  size_t leftovers = context->buffer.size - remaining_length - offset;
+  void* from = (char*)context->buffer.data + remaining_length + offset;
+  memmove(context->buffer.data, from, leftovers);
+  context->buffer.size = leftovers;
   return kPublishParseResultSuccess;
 }
 
-static int ReadPublish(struct MqttContext* context, int mqtt) {
+static bool ReadPublish(struct MqttContext* context, int mqtt) {
   int avail;
   if (ioctl(mqtt, FIONREAD, &avail) == -1) {
     LOG("Failed to get available data size (%s)", strerror(errno));
-    return -1;
+    return false;
   }
   if (!avail) {
     LOG("Broker closed connection");
-    return -1;
+    return false;
   }
 
   size_t size = (size_t)avail;
-  void* buffer = GetBuffer(context, size);
-  if (!buffer) return -1;
+  void* buffer = BufferReserve(&context->buffer, size);
+  if (!buffer) {
+    LOG("Failed to reserve buffer (%s)", strerror(errno));
+    return false;
+  }
 
   for (;;) {
     ssize_t len = read(mqtt, buffer, size);
@@ -122,11 +112,11 @@ static int ReadPublish(struct MqttContext* context, int mqtt) {
         LOG("Failed to read mqtt (%s)", strerror(errno));
         __attribute__((fallthrough));
       case 0:
-        return -1;
+        return false;
       default:
         break;
     }
-    context->buffer_size += (size_t)len;
+    context->buffer.size += (size_t)len;
     break;
   }
 
@@ -135,39 +125,39 @@ static int ReadPublish(struct MqttContext* context, int mqtt) {
       case kPublishParseResultSuccess:
         continue;
       case kPublishParseResultReadMore:
-        return 0;
+        return true;
       case kPublishParseResultError:
-        return -1;
+        return false;
       default:
         __builtin_unreachable();
     }
   }
 }
 
-static int ReadSubscribeAck(struct MqttContext* context, int mqtt) {
+static bool ReadSubscribeAck(struct MqttContext* context, int mqtt) {
   struct __attribute__((__packed__)) {
     uint8_t packet_type;
     uint8_t message_length;
     uint16_t packet_identifier;
     uint8_t return_code;
   } subscribe_ack;
-  _Static_assert(sizeof(subscribe_ack) == 5, "Unexpected subscribe ack size");
+  static_assert(sizeof(subscribe_ack) == 5, "Unexpected subscribe ack size");
   if (read(mqtt, &subscribe_ack, sizeof(subscribe_ack)) !=
       sizeof(subscribe_ack)) {
     LOG("Failed to read mqtt (%s)", strerror(errno));
-    return -1;
+    return false;
   }
   if (subscribe_ack.packet_type != 0x90 || subscribe_ack.message_length != 3 ||
       subscribe_ack.packet_identifier != htons(1) ||
       subscribe_ack.return_code != 0) {
     LOG("Unexpected subscribe ack from mqtt broker");
-    return -1;
+    return false;
   }
   context->handler = ReadPublish;
-  return 0;
+  return true;
 }
 
-static int WriteSubscribe(struct MqttContext* context, int mqtt) {
+static bool WriteSubscribe(struct MqttContext* context, int mqtt) {
   struct __attribute__((__packed__)) {
     uint8_t packet_type;
     uint8_t message_length;
@@ -183,43 +173,43 @@ static int WriteSubscribe(struct MqttContext* context, int mqtt) {
       .topic = {'+', '/', '#'},
       .qos = 0x00,
   };
-  _Static_assert(sizeof(subscribe_message) == 10,
-                 "Unexpected subscribe message size");
+  static_assert(sizeof(subscribe_message) == 10,
+                "Unexpected subscribe message size");
   if (write(mqtt, &subscribe_message, sizeof(subscribe_message)) !=
       sizeof(subscribe_message)) {
     LOG("Failed to write mqtt (%s)", strerror(errno));
-    return -1;
+    return false;
   }
   context->handler = ReadSubscribeAck;
-  return 0;
+  return true;
 }
 
-static int ReadConnectAck(struct MqttContext* context, int mqtt) {
+static bool ReadConnectAck(struct MqttContext* context, int mqtt) {
   struct __attribute__((__packed__)) {
     uint8_t packet_type;
     uint8_t message_length;
     uint8_t connack_flags;
     uint8_t return_code;
   } connect_ack;
-  _Static_assert(sizeof(connect_ack) == 4, "Unexpected connect ack size");
+  static_assert(sizeof(connect_ack) == 4, "Unexpected connect ack size");
   if (read(mqtt, &connect_ack, sizeof(connect_ack)) != sizeof(connect_ack)) {
     LOG("Failed to read mqtt (%s)", strerror(errno));
-    return -1;
+    return false;
   }
   if (connect_ack.packet_type != 0x20 || connect_ack.message_length != 2 ||
       connect_ack.connack_flags != 0x00 || connect_ack.return_code != 0) {
     LOG("Unexpected connect ack from mqtt broker");
-    return -1;
+    return false;
   }
-  if (WriteSubscribe(context, mqtt) == -1) {
+  if (!WriteSubscribe(context, mqtt)) {
     LOG("Failed to subscribe to mqtt broker");
-    return -1;
+    return false;
   }
-  return 0;
+  return true;
 }
 
-static int WriteConnect(struct MqttContext* context, uint16_t keepalive,
-                        int mqtt) {
+static bool WriteConnect(struct MqttContext* context, uint16_t keepalive,
+                         int mqtt) {
   struct __attribute__((__packed__)) {
     uint8_t packet_type;
     uint8_t message_length;
@@ -239,18 +229,18 @@ static int WriteConnect(struct MqttContext* context, uint16_t keepalive,
       .keepalive = htons(keepalive),
       .client_id_length = 0,
   };
-  _Static_assert(sizeof(connect_message) == 14,
-                 "Unexpected connect message size");
+  static_assert(sizeof(connect_message) == 14,
+                "Unexpected connect message size");
   if (write(mqtt, &connect_message, sizeof(connect_message)) !=
       sizeof(connect_message)) {
     LOG("Failed to write mqtt (%s)", strerror(errno));
-    return -1;
+    return false;
   }
   context->handler = ReadConnectAck;
-  return 0;
+  return true;
 }
 
-static int WritePing(struct MqttContext* context, int mqtt) {
+static bool WritePing(struct MqttContext* context, int mqtt) {
   (void)context;
   struct __attribute__((__packed__)) {
     uint8_t packet_type;
@@ -259,44 +249,50 @@ static int WritePing(struct MqttContext* context, int mqtt) {
       .packet_type = 0xd0,
       .message_length = 0,
   };
-  _Static_assert(sizeof(ping_message) == 2, "Unexpected ping message size");
+  static_assert(sizeof(ping_message) == 2, "Unexpected ping message size");
   if (write(mqtt, &ping_message, sizeof(ping_message)) !=
       sizeof(ping_message)) {
     LOG("Failed to write mqtt (%s)", strerror(errno));
-    return -1;
+    return false;
   }
-  return 0;
+  return true;
 }
 
-int MqttContextInit(struct MqttContext* context, uint16_t keepalive, int mqtt,
-                    MqttPublishCallback publish_callback, void* publish_user) {
+bool MqttContextInit(struct MqttContext* context, uint16_t keepalive, int mqtt,
+                     MqttPublishCallback publish_callback, void* publish_user) {
   struct MqttContext init = {
       .publish_callback = publish_callback,
       .publish_user = publish_user,
   };
   *context = init;
-  if (WriteConnect(context, keepalive, mqtt) == -1) {
+  if (!WriteConnect(context, keepalive, mqtt)) {
     LOG("Failed to connect to mqtt broker");
-    return -1;
+    return false;
   }
-  return 0;
+  return true;
 }
 
-int MqttContextPing(struct MqttContext* context, int mqtt) {
-  if (WritePing(context, mqtt) == -1) {
+bool MqttContextPing(struct MqttContext* context, int mqtt) {
+  if (!WritePing(context, mqtt)) {
     LOG("Failed to ping mqtt broker");
-    return -1;
+    return false;
   }
-  return 0;
+  return true;
 }
 
-int MqttContextPublish(struct MqttContext* context, int mqtt) {
+bool MqttContextPublish(struct MqttContext* context, int mqtt,
+                        const char* topic, size_t topic_size,
+                        const void* payload, size_t payload_size) {
   (void)context;
   (void)mqtt;
+  (void)topic;
+  (void)topic_size;
+  (void)payload;
+  (void)payload_size;
   // TODO(mburakov): Implement me!
-  return 0;
+  return true;
 }
 
 void MqttContextCleanup(struct MqttContext* context) {
-  free(context->buffer_data);
+  BufferCleanup(&context->buffer);
 }

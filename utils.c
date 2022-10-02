@@ -18,8 +18,46 @@
 #include "utils.h"
 
 #include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
+
+void BufferInit(struct Buffer* buffer) {
+  buffer->data = NULL;
+  buffer->size = 0;
+  buffer->alloc = 0;
+}
+
+void* BufferReserve(struct Buffer* buffer, size_t size) {
+  size_t alloc = buffer->size + size;
+  if (alloc > buffer->alloc) {
+    void* data = realloc(buffer->data, alloc);
+    if (!data) return NULL;
+    buffer->data = data;
+    buffer->alloc = alloc;
+  }
+  uintptr_t base = (uintptr_t)buffer->data;
+  return (void*)(base + buffer->size);
+}
+
+bool BufferAssign(struct Buffer* buffer, const void* data, size_t size) {
+  if (size > buffer->alloc) {
+    void* ndata = malloc(size);
+    if (!ndata) return false;
+    free(buffer->data);
+    buffer->data = ndata;
+    buffer->alloc = size;
+  }
+  memcpy(buffer->data, data, size);
+  buffer->size = size;
+  return true;
+}
+
+void BufferCleanup(struct Buffer* buffer) { free(buffer->data); }
 
 void LogImpl(const char* fmt, ...) {
   va_list args;
