@@ -37,12 +37,14 @@ struct MqttfsNode {
   bool present_as_dir;
   struct Buffer buffer;
   struct MqttfsHandle* handles;
+  struct MqttfsNode* parent;
 };
 
 struct MqttfsHandle* MqttfsHandleCreate(struct MqttfsNode* node);
 void MqttfsHandleDestroy(struct MqttfsNode* node, struct MqttfsHandle* handle);
 
-struct MqttfsNode* MqttfsNodeCreate(const char* name);
+struct MqttfsNode* MqttfsNodeCreate(const char* name,
+                                    struct MqttfsNode* parent);
 bool MqttfsNodeIsDirectory(const struct MqttfsNode* node);
 void MqttfsNodeDestroy(void* node);
 

@@ -55,7 +55,8 @@ void MqttfsHandleDestroy(struct MqttfsNode* node, struct MqttfsHandle* handle) {
   free(handle);
 }
 
-struct MqttfsNode* MqttfsNodeCreate(const char* name) {
+struct MqttfsNode* MqttfsNodeCreate(const char* name,
+                                    struct MqttfsNode* parent) {
   struct MqttfsNode* node = malloc(sizeof(struct MqttfsNode));
   if (!node) {
     LOG("Failed to allocate node (%s)", strerror(errno));
@@ -73,6 +74,7 @@ struct MqttfsNode* MqttfsNodeCreate(const char* name) {
   node->present_as_dir = false;
   BufferInit(&node->buffer);
   node->handles = NULL;
+  node->parent = parent;
   return node;
 }
 

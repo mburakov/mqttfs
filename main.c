@@ -22,6 +22,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,8 +74,12 @@ static void OnMqttPublish(void* user, const char* topic, size_t topic_size,
 static void OnFuseWrite(void* user, const char* pathname, size_t pathname_size,
                         const void* data, size_t data_size) {
   struct Context* context = user;
+  if (pathname_size > UINT16_MAX) {
+    LOG("Pathname too long to publish");
+    return;
+  }
   if (!MqttContextPublish(&context->mqtt, context->mqtt_fd, pathname,
-                          pathname_size, data, data_size)) {
+                          (uint16_t)pathname_size, data, data_size)) {
     LOG("Failed to publish to mqtt");
   }
 }

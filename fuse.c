@@ -47,6 +47,10 @@ struct FuseRequest {
       struct fuse_read_in header;
     } read, readdir;
     struct {
+      struct fuse_write_in header;
+      char data;
+    } write;
+    struct {
       struct fuse_release_in header;
     } release, releasedir;
     struct {
@@ -181,7 +185,7 @@ static struct MqttfsNode* RecurseStore(struct MqttfsNode* node,
   }
   int child_created = *pchild == &name;
   if (child_created) {
-    struct MqttfsNode* child = MqttfsNodeCreate(name);
+    struct MqttfsNode* child = MqttfsNodeCreate(name, node);
     if (!child) {
       LOG("Failed to create node");
       tdelete(&name, &node->children, CompareNodes);
@@ -213,7 +217,7 @@ static bool CreateChildNode(struct MqttfsNode* node, uint64_t unique,
     return WriteFuseStatus(fuse, unique, -EEXIST);
   }
 
-  struct MqttfsNode* child = MqttfsNodeCreate(name);
+  struct MqttfsNode* child = MqttfsNodeCreate(name, node);
   if (!child) {
     LOG("Failed to create node");
     goto rollback_pchild;
@@ -364,6 +368,43 @@ static bool OnFuseRead(const struct FuseRequest* request,
   const void* buffer_data = (void*)(base + offset);
   size_t buffer_size = MIN(size, handle->buffer->size - offset);
   return WriteFuseReply(fuse, unique, buffer_data, buffer_size);
+}
+
+static bool OnFuseWrite(const struct FuseRequest* request,
+                        struct FuseContext* context, int fuse) {
+  struct MqttfsNode* node = (void*)request->header.nodeid;
+  struct MqttfsHandle* handle = (void*)request->write.header.fh;
+  uint64_t offset = request->write.header.offset;
+  uint32_t size = request->write.header.size;
+  LOG("[%p]->%s(fh=%p, offset=%lu, size=%u)", (void*)node, __func__,
+      (void*)handle, offset, size);
+
+  uint64_t unique = request->header.unique;
+  const void* data = &request->write.data;
+  if (!BufferAssign(handle->buffer, data, size)) {
+    LOG("Failed to store data");
+    return WriteFuseStatus(fuse, unique, -ENOMEM);
+  }
+
+  size_t pathname_size = 0;
+  for (struct MqttfsNode* it = node; it->parent; it = it->parent)
+    pathname_size += strlen(it->name) + 1;
+  char pathname[pathname_size];
+  char* ptr = pathname + pathname_size;
+  for (struct MqttfsNode* it = node; it->parent; it = it->parent) {
+    size_t name_length = strlen(it->name);
+    ptr -= name_length + 1;
+    ptr[0] = '/';
+    memcpy(ptr + 1, it->name, name_length);
+  }
+  // mburakov: Omit leading slash.
+  context->write_callback(context->write_user, pathname + 1, pathname_size - 1,
+                          handle->buffer->data, handle->buffer->size);
+
+  struct fuse_write_out write_out = {
+      .size = size,
+  };
+  return WriteFuseReply(fuse, unique, &write_out, sizeof(write_out));
 }
 
 static bool OnFuseRelease(const struct FuseRequest* request,
@@ -525,6 +566,7 @@ void FuseContextInit(struct FuseContext* context,
   context->root.present_as_dir = true;
   BufferInit(&context->root.buffer);
   context->root.handles = NULL;
+  context->root.parent = NULL;
 }
 
 bool FuseContextHandle(struct FuseContext* context, int fuse) {
@@ -542,21 +584,14 @@ bool FuseContextHandle(struct FuseContext* context, int fuse) {
   typedef bool (*FuseRequestHandler)(const struct FuseRequest*,
                                      struct FuseContext*, int);
   static const FuseRequestHandler fuse_request_handlers[] = {
-      [FUSE_LOOKUP] = OnFuseLookup,
-      [FUSE_FORGET] = OnFuseForget,
-      [FUSE_GETATTR] = OnFuseGetattr,
-      [FUSE_MKDIR] = OnFuseMkdir,
-      [FUSE_UNLINK] = OnFuseUnlink,
-      [FUSE_RMDIR] = OnFuseUnlink,
-      [FUSE_OPEN] = OnFuseOpen,
-      [FUSE_READ] = OnFuseRead,
-      [FUSE_RELEASE] = OnFuseRelease,
-      [FUSE_INIT] = OnFuseInit,
-      [FUSE_OPENDIR] = OnFuseOpendir,
-      [FUSE_READDIR] = OnFuseReaddir,
-      [FUSE_RELEASEDIR] = OnFuseReleasedir,
-      [FUSE_CREATE] = OnFuseCreate,
-      [FUSE_POLL] = OnFusePoll,
+      [FUSE_LOOKUP] = OnFuseLookup,   [FUSE_FORGET] = OnFuseForget,
+      [FUSE_GETATTR] = OnFuseGetattr, [FUSE_MKDIR] = OnFuseMkdir,
+      [FUSE_UNLINK] = OnFuseUnlink,   [FUSE_RMDIR] = OnFuseUnlink,
+      [FUSE_OPEN] = OnFuseOpen,       [FUSE_READ] = OnFuseRead,
+      [FUSE_WRITE] = OnFuseWrite,     [FUSE_RELEASE] = OnFuseRelease,
+      [FUSE_INIT] = OnFuseInit,       [FUSE_OPENDIR] = OnFuseOpendir,
+      [FUSE_READDIR] = OnFuseReaddir, [FUSE_RELEASEDIR] = OnFuseReleasedir,
+      [FUSE_CREATE] = OnFuseCreate,   [FUSE_POLL] = OnFusePoll,
   };
 
   FuseRequestHandler request_handler = OnFuseUnknown;
@@ -573,7 +608,7 @@ bool FuseContextHandle(struct FuseContext* context, int fuse) {
 bool FuseContextWrite(struct FuseContext* context, int fuse,
                       const char* pathname, size_t pathname_size,
                       const void* data, size_t data_size) {
-  LOG("%.*s: %.*s", (int)pathname_size, pathname, (int)data_size,
+  LOG("%.*s -> %.*s", (int)pathname_size, pathname, (int)data_size,
       (const char*)data);
 
   struct MqttfsNode* node =

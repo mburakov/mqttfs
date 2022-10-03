@@ -320,6 +320,9 @@ bool MqttContextPublish(struct MqttContext* context, int mqtt,
                         const char* topic, uint16_t topic_size,
                         const void* payload, size_t payload_size) {
   (void)context;
+  LOG("%.*s <- %.*s", (int)topic_size, topic, (int)payload_size,
+      (const char*)payload);
+
   uint8_t prefix[5] = {0x30};
   size_t prefix_digits =
       WriteVarint(sizeof(topic_size) + topic_size + payload_size, prefix + 1);
