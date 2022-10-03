@@ -162,7 +162,7 @@ int main(int argc, char* argv[]) {
 
 rollback_context:
   FuseContextCleanup(&context.fuse);
-  MqttContextCleanup(&context.mqtt);
+  MqttContextCleanup(&context.mqtt, context.mqtt_fd);
 rollback_mount:
   umount(argv[2]);
 rollback_fuse_fd:

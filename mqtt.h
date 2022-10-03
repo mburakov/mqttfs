@@ -39,8 +39,8 @@ bool MqttContextInit(struct MqttContext* context, uint16_t keepalive, int mqtt,
                      MqttPublishCallback publish_callback, void* publish_user);
 bool MqttContextPing(struct MqttContext* context, int mqtt);
 bool MqttContextPublish(struct MqttContext* context, int mqtt,
-                        const char* topic, size_t topic_size,
+                        const char* topic, uint16_t topic_size,
                         const void* payload, size_t payload_size);
-void MqttContextCleanup(struct MqttContext* context);
+void MqttContextCleanup(struct MqttContext* context, int mqtt);
 
 #endif  // MQTTFS_MQTT_H_

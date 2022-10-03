@@ -26,9 +26,12 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #include "utils.h"
+
+#define UNCONST(op) ((void*)(uintptr_t)(op))
 
 enum PublishParseResult {
   kPublishParseResultSuccess = 0,
@@ -54,6 +57,21 @@ static size_t ReadVarint(const struct MqttContext* context, size_t* offset,
   }
   LOG("Failed to parse varint");
   longjmp(jmpbuf, kPublishParseResultError);
+}
+
+static size_t WriteVarint(size_t varint, uint8_t* buffer) {
+  if (varint > 268435455) return 0;
+  size_t result = 0;
+  for (;;) {
+    buffer[result] = varint & 0x7f;
+    varint = varint >> 7;
+    if (varint) {
+      buffer[result] |= 0x80;
+      result++;
+    } else {
+      return result + 1;
+    }
+  }
 }
 
 static enum PublishParseResult ParsePublish(struct MqttContext* context) {
@@ -240,8 +258,7 @@ static bool WriteConnect(struct MqttContext* context, uint16_t keepalive,
   return true;
 }
 
-static bool WritePing(struct MqttContext* context, int mqtt) {
-  (void)context;
+static bool WritePing(int mqtt) {
   struct __attribute__((__packed__)) {
     uint8_t packet_type;
     uint8_t message_length;
@@ -252,6 +269,24 @@ static bool WritePing(struct MqttContext* context, int mqtt) {
   static_assert(sizeof(ping_message) == 2, "Unexpected ping message size");
   if (write(mqtt, &ping_message, sizeof(ping_message)) !=
       sizeof(ping_message)) {
+    LOG("Failed to write mqtt (%s)", strerror(errno));
+    return false;
+  }
+  return true;
+}
+
+bool WriteDisconnect(int mqtt) {
+  struct __attribute__((__packed__)) {
+    uint8_t packet_type;
+    uint8_t message_length;
+  } disconnect_message = {
+      .packet_type = 0xe0,
+      .message_length = 0,
+  };
+  static_assert(sizeof(disconnect_message) == 2,
+                "Unexpected disconnect message size");
+  if (write(mqtt, &disconnect_message, sizeof(disconnect_message)) !=
+      sizeof(disconnect_message)) {
     LOG("Failed to write mqtt (%s)", strerror(errno));
     return false;
   }
@@ -273,7 +308,8 @@ bool MqttContextInit(struct MqttContext* context, uint16_t keepalive, int mqtt,
 }
 
 bool MqttContextPing(struct MqttContext* context, int mqtt) {
-  if (!WritePing(context, mqtt)) {
+  (void)context;
+  if (!WritePing(mqtt)) {
     LOG("Failed to ping mqtt broker");
     return false;
   }
@@ -281,18 +317,36 @@ bool MqttContextPing(struct MqttContext* context, int mqtt) {
 }
 
 bool MqttContextPublish(struct MqttContext* context, int mqtt,
-                        const char* topic, size_t topic_size,
+                        const char* topic, uint16_t topic_size,
                         const void* payload, size_t payload_size) {
   (void)context;
-  (void)mqtt;
-  (void)topic;
-  (void)topic_size;
-  (void)payload;
-  (void)payload_size;
-  // TODO(mburakov): Implement me!
+  uint8_t prefix[5] = {0x30};
+  size_t prefix_digits =
+      WriteVarint(sizeof(topic_size) + topic_size + payload_size, prefix + 1);
+  if (!prefix_digits++) {
+    LOG("Invalid payload size");
+    return false;
+  }
+
+  uint16_t topic_size_no = htons(topic_size);
+  struct iovec iov[] = {
+      {.iov_base = prefix, .iov_len = prefix_digits},
+      {.iov_base = &topic_size_no, .iov_len = sizeof(topic_size_no)},
+      {.iov_base = UNCONST(topic), .iov_len = topic_size},
+      {.iov_base = UNCONST(payload), .iov_len = payload_size},
+  };
+
+  ssize_t write_length = 0;
+  for (size_t idx = 0; idx < LENGTH(iov); idx++)
+    write_length += iov[idx].iov_len;
+  if (writev(mqtt, iov, LENGTH(iov)) != write_length) {
+    LOG("Failed to write mqtt (%s)", strerror(errno));
+    return false;
+  }
   return true;
 }
 
-void MqttContextCleanup(struct MqttContext* context) {
+void MqttContextCleanup(struct MqttContext* context, int mqtt) {
+  WriteDisconnect(mqtt);
   BufferCleanup(&context->buffer);
 }
